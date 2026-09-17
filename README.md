@@ -4,14 +4,21 @@ App sencilla en Flutter para estimar y controlar tus gastos mensuales por catego
 
 ## Qué hace
 
-- Trae categorías predefinidas: Comida, Transporte, Entretenimiento, Artículos de limpieza,
-  Cuidado personal, Ahorro, Pago de créditos, Servicios y Otros.
-- Para cada categoría puedes capturar:
-  - **Presupuesto estimado**: cuánto planeas gastar ese mes.
-  - **Gastado hasta ahora**: cuánto llevas gastado realmente.
-- Muestra un resumen en la parte superior con el total estimado, el total gastado,
-  el porcentaje usado y si te queda disponible o ya te excediste.
-- Puedes agregar categorías propias o eliminar las que no uses (deslizando hacia la izquierda).
+La app tiene tres pestañas:
+
+- **Este mes**: resumen del presupuesto vs. lo gastado, progreso por categoría, y un
+  botón "+" para **registrar un gasto del día** (eliges categoría, monto, fecha y una
+  nota opcional). Los gastos recientes se listan abajo y puedes borrarlos deslizando.
+- **Gráficas**: una gráfica de pastel con el gasto por categoría del mes actual, y una
+  gráfica de barras comparando lo estimado vs. lo realmente gastado por categoría.
+- **Próximo mes**: aquí planeas con anticipación lo que sabes que vas a gastar el
+  siguiente mes (por ejemplo, un pago de crédito, una renta, etc.), categoría por
+  categoría. Cuando llegue ese mes, puedes usar el botón "Usar esto como presupuesto
+  del mes actual" para aplicarlo de un clic.
+
+Otros detalles:
+- Puedes agregar tus propias categorías o eliminar las que no uses (deslizando hacia
+  la izquierda). Al borrar una categoría también se borran sus gastos registrados.
 - Los datos se guardan en el dispositivo (con `shared_preferences`), así que persisten
   aunque cierres la app.
 
@@ -31,14 +38,15 @@ App sencilla en Flutter para estimar y controlar tus gastos mensuales por catego
 
 ```
 finanzas_app/
-├── pubspec.yaml       # dependencias del proyecto
+├── pubspec.yaml       # dependencias del proyecto (incluye fl_chart para las gráficas)
 └── lib/
     └── main.dart      # toda la lógica y las pantallas de la app
 ```
 
 ## Ideas para extender
 
-- Agregar un historial por día/semana en vez de solo un total mensual.
-- Graficar el gasto por categoría con un pie chart (paquete `fl_chart`).
+- Graficar la evolución del gasto semana a semana dentro del mes.
 - Sincronizar los datos en la nube (Firebase) para verlos desde varios dispositivos.
 - Agregar notificaciones cuando una categoría se acerque a su límite.
+- Permitir gastos recurrentes automáticos (por ejemplo, que el pago de un crédito se
+  registre solo cada mes).
