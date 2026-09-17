@@ -40,8 +40,10 @@ jobs:
         run: flutter pub get
 
       # 6. Compila el APK en modo release
+      #    --no-tree-shake-icons: necesario porque los iconos de las categorías
+      #    se reconstruyen dinámicamente desde datos guardados (no son constantes).
       - name: Compilar APK
-        run: flutter build apk --release
+        run: flutter build apk --release --no-tree-shake-icons
 
       # 7. Deja el APK disponible para descargar desde la pestaña "Actions"
       - name: Subir APK como artefacto
