@@ -11,13 +11,6 @@ jobs:
   build:
     runs-on: ubuntu-latest
 
-    # Cambia esto si tu pubspec.yaml queda en otra ruta dentro del repo.
-    # Si pubspec.yaml está en la raíz del repositorio, borra esta línea
-    # y quita también el "working-directory: ./finanzas_app" de cada paso de abajo.
-    defaults:
-      run:
-        working-directory: ./finanzas_app
-
     steps:
       # 1. Descarga el código del repositorio
       - name: Clonar repositorio
@@ -55,4 +48,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: app-release-apk
-          path: finanzas_app/build/app/outputs/flutter-apk/app-release.apk
+          path: build/app/outputs/flutter-apk/app-release.apk
