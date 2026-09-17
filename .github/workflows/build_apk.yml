@@ -35,17 +35,31 @@ jobs:
       - name: Generar plataforma Android
         run: flutter create --platforms android .
 
-      # 5. Descarga las dependencias del proyecto
+      # 5. Actualiza la versión de Kotlin: la que trae la plantilla por defecto
+      #    es demasiado vieja para el paquete shared_preferences.
+      - name: Actualizar versión de Kotlin
+        run: |
+          if [ -f android/settings.gradle ]; then
+            sed -i 's/id "org.jetbrains.kotlin.android" version "[^"]*"/id "org.jetbrains.kotlin.android" version "1.9.24"/' android/settings.gradle
+          fi
+          if [ -f android/settings.gradle.kts ]; then
+            sed -i 's/id("org.jetbrains.kotlin.android") version "[^"]*"/id("org.jetbrains.kotlin.android") version "1.9.24"/' android/settings.gradle.kts
+          fi
+          if [ -f android/build.gradle ]; then
+            sed -i "s/ext.kotlin_version = '[^']*'/ext.kotlin_version = '1.9.24'/" android/build.gradle
+          fi
+
+      # 6. Descarga las dependencias del proyecto
       - name: Instalar dependencias
         run: flutter pub get
 
-      # 6. Compila el APK en modo release
+      # 7. Compila el APK en modo release
       #    --no-tree-shake-icons: necesario porque los iconos de las categorías
       #    se reconstruyen dinámicamente desde datos guardados (no son constantes).
       - name: Compilar APK
         run: flutter build apk --release --no-tree-shake-icons
 
-      # 7. Deja el APK disponible para descargar desde la pestaña "Actions"
+      # 8. Deja el APK disponible para descargar desde la pestaña "Actions"
       - name: Subir APK como artefacto
         uses: actions/upload-artifact@v4
         with:
