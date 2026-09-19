@@ -49,17 +49,28 @@ jobs:
             sed -i "s/ext.kotlin_version = '[^']*'/ext.kotlin_version = '1.9.24'/" android/build.gradle
           fi
 
-      # 6. Descarga las dependencias del proyecto
+      # 6. Corrige un problema conocido: a veces el runner de GitHub descarga
+      #    un archivo android.jar corrupto para la plataforma Android 35,
+      #    lo que hace fallar el empaquetado de recursos. Lo reinstalamos.
+      - name: Reinstalar plataforma Android 35
+        run: |
+          SDKMANAGER=$(command -v sdkmanager || find "$ANDROID_HOME" -name "sdkmanager" 2>/dev/null | head -n 1)
+          echo "Usando sdkmanager en: $SDKMANAGER"
+          yes | "$SDKMANAGER" --licenses > /dev/null 2>&1 || true
+          "$SDKMANAGER" --uninstall "platforms;android-35" || true
+          "$SDKMANAGER" "platforms;android-35"
+
+      # 7. Descarga las dependencias del proyecto
       - name: Instalar dependencias
         run: flutter pub get
 
-      # 7. Compila el APK en modo release
+      # 8. Compila el APK en modo release
       #    --no-tree-shake-icons: necesario porque los iconos de las categorías
       #    se reconstruyen dinámicamente desde datos guardados (no son constantes).
       - name: Compilar APK
         run: flutter build apk --release --no-tree-shake-icons
 
-      # 8. Deja el APK disponible para descargar desde la pestaña "Actions"
+      # 9. Deja el APK disponible para descargar desde la pestaña "Actions"
       - name: Subir APK como artefacto
         uses: actions/upload-artifact@v4
         with:
