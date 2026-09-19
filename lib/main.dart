@@ -1,7 +1,11 @@
 import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:fl_chart/fl_chart.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:share_plus/share_plus.dart';
+import 'package:file_picker/file_picker.dart';
+import 'package:path_provider/path_provider.dart';
 
 void main() {
   runApp(const FinanzasApp());
@@ -57,19 +61,28 @@ class CategoriaConfig {
   IconData icono;
   double estimadoMesActual;
   double estimadoProximoMes;
+  List<ArticuloItem> articulos;
 
   CategoriaConfig({
     required this.nombre,
     required this.icono,
     this.estimadoMesActual = 0,
     this.estimadoProximoMes = 0,
-  });
+    List<ArticuloItem>? articulos,
+  }) : articulos = articulos ?? [];
+
+  /// Suma de (precio x cantidad) de todos los artículos listados en esta
+  /// categoría. Sirve para estimar cuánto se gastará en el mes en base a
+  /// una lista de productos, por ejemplo artículos de limpieza.
+  double get totalArticulos =>
+      articulos.fold(0.0, (sum, a) => sum + (a.precio * a.cantidad));
 
   Map<String, dynamic> toJson() => {
         'nombre': nombre,
         'icono': icono.codePoint,
         'estimadoMesActual': estimadoMesActual,
         'estimadoProximoMes': estimadoProximoMes,
+        'articulos': articulos.map((a) => a.toJson()).toList(),
       };
 
   factory CategoriaConfig.fromJson(Map<String, dynamic> json) =>
@@ -78,6 +91,41 @@ class CategoriaConfig {
         icono: IconData(json['icono'], fontFamily: 'MaterialIcons'),
         estimadoMesActual: (json['estimadoMesActual'] as num).toDouble(),
         estimadoProximoMes: (json['estimadoProximoMes'] as num).toDouble(),
+        articulos: (json['articulos'] as List<dynamic>? ?? [])
+            .map((e) => ArticuloItem.fromJson(e))
+            .toList(),
+      );
+}
+
+/// Un producto dentro de la lista de artículos de una categoría
+/// (por ejemplo, "Jabón" a $35 dentro de "Artículos de limpieza").
+class ArticuloItem {
+  String id;
+  String nombre;
+  double precio;
+  double cantidad;
+
+  ArticuloItem({
+    required this.id,
+    required this.nombre,
+    required this.precio,
+    this.cantidad = 1,
+  });
+
+  double get subtotal => precio * cantidad;
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'nombre': nombre,
+        'precio': precio,
+        'cantidad': cantidad,
+      };
+
+  factory ArticuloItem.fromJson(Map<String, dynamic> json) => ArticuloItem(
+        id: json['id'],
+        nombre: json['nombre'],
+        precio: (json['precio'] as num).toDouble(),
+        cantidad: (json['cantidad'] as num?)?.toDouble() ?? 1,
       );
 }
 
@@ -499,6 +547,115 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     }
   }
 
+  /// Junta categorías y gastos en un solo archivo JSON y abre el panel para
+  /// compartirlo/guardarlo (Drive, correo, Archivos, WhatsApp, etc.).
+  Future<void> _exportarRespaldo() async {
+    try {
+      final respaldo = {
+        'version': 1,
+        'fechaExportacion': DateTime.now().toIso8601String(),
+        'categorias': categorias.map((c) => c.toJson()).toList(),
+        'gastos': gastos.map((g) => g.toJson()).toList(),
+      };
+
+      final directorio = await getTemporaryDirectory();
+      final ahora = DateTime.now();
+      final nombreArchivo =
+          'respaldo_finanzas_${ahora.year}${ahora.month.toString().padLeft(2, '0')}${ahora.day.toString().padLeft(2, '0')}.json';
+      final archivo = File('${directorio.path}/$nombreArchivo');
+      await archivo.writeAsString(jsonEncode(respaldo));
+
+      await Share.shareXFiles(
+        [XFile(archivo.path)],
+        text: 'Respaldo de Mis Finanzas',
+      );
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('No se pudo exportar el respaldo: $e')),
+        );
+      }
+    }
+  }
+
+  /// Deja elegir un archivo .json de respaldo y, tras confirmar, reemplaza
+  /// las categorías y gastos actuales con lo que traiga ese archivo.
+  Future<void> _importarRespaldo() async {
+    try {
+      final resultado = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['json'],
+      );
+      if (resultado == null || resultado.files.single.path == null) return;
+
+      final archivo = File(resultado.files.single.path!);
+      final contenido = jsonDecode(await archivo.readAsString());
+
+      final nuevasCategorias = (contenido['categorias'] as List<dynamic>)
+          .map((e) => CategoriaConfig.fromJson(e))
+          .toList();
+      final nuevosGastos = (contenido['gastos'] as List<dynamic>)
+          .map((e) => Gasto.fromJson(e))
+          .toList();
+
+      if (!mounted) return;
+      final confirmar = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Importar respaldo'),
+          content: Text(
+              'Se encontraron ${nuevasCategorias.length} categorías y ${nuevosGastos.length} gastos. '
+              'Esto reemplazará TODA la información que tienes actualmente en la app. ¿Continuar?'),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(context, false),
+                child: const Text('Cancelar')),
+            ElevatedButton(
+                onPressed: () => Navigator.pop(context, true),
+                child: const Text('Reemplazar')),
+          ],
+        ),
+      );
+
+      if (confirmar == true) {
+        setState(() {
+          categorias = nuevasCategorias;
+          gastos = nuevosGastos;
+        });
+        await _guardarCategorias();
+        await _guardarGastos();
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Respaldo importado correctamente')),
+          );
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('No se pudo importar el respaldo: $e')),
+        );
+      }
+    }
+  }
+
+  /// Abre la pantalla con la lista de artículos y precios de una categoría
+  /// (por ejemplo, los productos de "Artículos de limpieza").
+  Future<void> _abrirListaArticulos(CategoriaConfig cat) async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => ArticulosScreen(
+          categoria: cat,
+          onCambio: () async {
+            await _guardarCategorias();
+            setState(() {});
+          },
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     if (cargando) {
@@ -509,6 +666,32 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
       appBar: AppBar(
         title: const Text('Mis Finanzas'),
         centerTitle: true,
+        actions: [
+          PopupMenuButton<String>(
+            onSelected: (valor) {
+              if (valor == 'exportar') _exportarRespaldo();
+              if (valor == 'importar') _importarRespaldo();
+            },
+            itemBuilder: (context) => const [
+              PopupMenuItem(
+                value: 'exportar',
+                child: ListTile(
+                  leading: Icon(Icons.upload_file),
+                  title: Text('Exportar respaldo'),
+                  contentPadding: EdgeInsets.zero,
+                ),
+              ),
+              PopupMenuItem(
+                value: 'importar',
+                child: ListTile(
+                  leading: Icon(Icons.download_outlined),
+                  title: Text('Importar respaldo'),
+                  contentPadding: EdgeInsets.zero,
+                ),
+              ),
+            ],
+          ),
+        ],
         bottom: TabBar(
           controller: _tabController,
           tabs: const [
@@ -549,6 +732,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
             onEditarPresupuesto: (c) => _editarPresupuesto(c, proximoMes: false),
             onEliminarCategoria: _eliminarCategoria,
             onEliminarGasto: _eliminarGasto,
+            onVerArticulos: _abrirListaArticulos,
           ),
           _GraficasTab(
             categorias: categorias,
@@ -560,6 +744,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
             totalEstimadoProximoMes: totalEstimadoProximoMes,
             onEditarPresupuesto: (c) => _editarPresupuesto(c, proximoMes: true),
             onAplicar: _aplicarPresupuestoProximoMes,
+            onVerArticulos: _abrirListaArticulos,
           ),
         ],
       ),
@@ -580,6 +765,7 @@ class _EsteMesTab extends StatelessWidget {
   final void Function(CategoriaConfig) onEditarPresupuesto;
   final void Function(CategoriaConfig) onEliminarCategoria;
   final void Function(Gasto) onEliminarGasto;
+  final void Function(CategoriaConfig) onVerArticulos;
 
   const _EsteMesTab({
     required this.categorias,
@@ -590,6 +776,7 @@ class _EsteMesTab extends StatelessWidget {
     required this.onEditarPresupuesto,
     required this.onEliminarCategoria,
     required this.onEliminarGasto,
+    required this.onVerArticulos,
   });
 
   @override
@@ -617,6 +804,7 @@ class _EsteMesTab extends StatelessWidget {
             gastado: gastado,
             onTap: () => onEditarPresupuesto(cat),
             onDelete: () => onEliminarCategoria(cat),
+            onVerArticulos: () => onVerArticulos(cat),
           );
         }),
         const SizedBox(height: 24),
@@ -837,12 +1025,14 @@ class _ProximoMesTab extends StatelessWidget {
   final double totalEstimadoProximoMes;
   final void Function(CategoriaConfig) onEditarPresupuesto;
   final VoidCallback onAplicar;
+  final void Function(CategoriaConfig) onVerArticulos;
 
   const _ProximoMesTab({
     required this.categorias,
     required this.totalEstimadoProximoMes,
     required this.onEditarPresupuesto,
     required this.onAplicar,
+    required this.onVerArticulos,
   });
 
   @override
@@ -896,7 +1086,17 @@ class _ProximoMesTab extends StatelessWidget {
                 subtitle: Text(cat.estimadoProximoMes == 0
                     ? 'Sin planear todavía'
                     : 'Planeado: \$${cat.estimadoProximoMes.toStringAsFixed(2)}'),
-                trailing: const Icon(Icons.chevron_right),
+                trailing: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    IconButton(
+                      tooltip: 'Lista de artículos',
+                      icon: const Icon(Icons.list_alt),
+                      onPressed: () => onVerArticulos(cat),
+                    ),
+                    const Icon(Icons.chevron_right),
+                  ],
+                ),
               ),
             )),
         const SizedBox(height: 80),
@@ -982,12 +1182,14 @@ class _CategoriaTile extends StatelessWidget {
   final double gastado;
   final VoidCallback onTap;
   final VoidCallback onDelete;
+  final VoidCallback onVerArticulos;
 
   const _CategoriaTile({
     required this.categoria,
     required this.gastado,
     required this.onTap,
     required this.onDelete,
+    required this.onVerArticulos,
   });
 
   @override
@@ -1039,11 +1241,299 @@ class _CategoriaTile extends StatelessWidget {
                 const SizedBox(height: 6),
                 Text('\$${gastado.toStringAsFixed(2)} / \$${categoria.estimadoMesActual.toStringAsFixed(2)}',
                     style: const TextStyle(fontSize: 12, color: Colors.black54)),
+                if (categoria.articulos.isNotEmpty) ...[
+                  const SizedBox(height: 2),
+                  Text(
+                    '${categoria.articulos.length} artículos listados · \$${categoria.totalArticulos.toStringAsFixed(2)}',
+                    style: const TextStyle(fontSize: 11, color: Colors.black45),
+                  ),
+                ],
               ],
             ),
           ),
-          trailing: const Icon(Icons.chevron_right),
+          trailing: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              IconButton(
+                tooltip: 'Lista de artículos',
+                icon: const Icon(Icons.list_alt),
+                onPressed: onVerArticulos,
+              ),
+              const Icon(Icons.chevron_right),
+            ],
+          ),
         ),
+      ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// PANTALLA: LISTA DE ARTÍCULOS DE UNA CATEGORÍA
+// ---------------------------------------------------------------------------
+
+/// Pantalla donde el usuario lista productos con su precio dentro de una
+/// categoría (por ejemplo, los artículos que compra normalmente de limpieza
+/// o de cuidado personal), para calcular cuánto sumaría gastar en ellos.
+class ArticulosScreen extends StatefulWidget {
+  final CategoriaConfig categoria;
+  final VoidCallback onCambio;
+
+  const ArticulosScreen({
+    super.key,
+    required this.categoria,
+    required this.onCambio,
+  });
+
+  @override
+  State<ArticulosScreen> createState() => _ArticulosScreenState();
+}
+
+class _ArticulosScreenState extends State<ArticulosScreen> {
+  Future<void> _agregarOEditarArticulo({ArticuloItem? existente}) async {
+    final nombreCtrl = TextEditingController(text: existente?.nombre ?? '');
+    final precioCtrl =
+        TextEditingController(text: existente == null ? '' : existente.precio.toStringAsFixed(2));
+    final cantidadCtrl =
+        TextEditingController(text: existente == null ? '1' : _formatoCantidad(existente.cantidad));
+
+    final guardado = await showModalBottomSheet<bool>(
+      context: context,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (context) {
+        return Padding(
+          padding: EdgeInsets.only(
+            left: 20,
+            right: 20,
+            top: 20,
+            bottom: MediaQuery.of(context).viewInsets.bottom + 20,
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text(existente == null ? 'Nuevo artículo' : 'Editar artículo',
+                  style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+              const SizedBox(height: 16),
+              TextField(
+                controller: nombreCtrl,
+                autofocus: true,
+                decoration: const InputDecoration(
+                  labelText: 'Nombre del artículo',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  Expanded(
+                    flex: 3,
+                    child: TextField(
+                      controller: precioCtrl,
+                      keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                      decoration: const InputDecoration(
+                        labelText: 'Precio unitario',
+                        prefixText: '\$ ',
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    flex: 2,
+                    child: TextField(
+                      controller: cantidadCtrl,
+                      keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                      decoration: const InputDecoration(
+                        labelText: 'Cantidad',
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 20),
+              ElevatedButton(
+                onPressed: () {
+                  final nombre = nombreCtrl.text.trim();
+                  final precio = double.tryParse(precioCtrl.text) ?? 0;
+                  final cantidad = double.tryParse(cantidadCtrl.text) ?? 1;
+                  if (nombre.isEmpty || precio <= 0) return;
+
+                  if (existente != null) {
+                    existente.nombre = nombre;
+                    existente.precio = precio;
+                    existente.cantidad = cantidad;
+                  } else {
+                    widget.categoria.articulos.add(ArticuloItem(
+                      id: DateTime.now().microsecondsSinceEpoch.toString(),
+                      nombre: nombre,
+                      precio: precio,
+                      cantidad: cantidad,
+                    ));
+                  }
+                  Navigator.pop(context, true);
+                },
+                child: const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 12),
+                  child: Text('Guardar'),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+
+    if (guardado == true) {
+      widget.onCambio();
+      setState(() {});
+    }
+  }
+
+  void _eliminarArticulo(ArticuloItem a) {
+    setState(() => widget.categoria.articulos.remove(a));
+    widget.onCambio();
+  }
+
+  Future<void> _usarComoPresupuesto({required bool proximoMes}) async {
+    final total = widget.categoria.totalArticulos;
+    final confirmar = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Usar como presupuesto'),
+        content: Text(
+          proximoMes
+              ? 'Se usará \$${total.toStringAsFixed(2)} como presupuesto planeado del próximo mes para "${widget.categoria.nombre}".'
+              : 'Se usará \$${total.toStringAsFixed(2)} como presupuesto del mes actual para "${widget.categoria.nombre}".',
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancelar')),
+          ElevatedButton(onPressed: () => Navigator.pop(context, true), child: const Text('Aplicar')),
+        ],
+      ),
+    );
+
+    if (confirmar == true) {
+      setState(() {
+        if (proximoMes) {
+          widget.categoria.estimadoProximoMes = total;
+        } else {
+          widget.categoria.estimadoMesActual = total;
+        }
+      });
+      widget.onCambio();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Presupuesto actualizado')),
+        );
+      }
+    }
+  }
+
+  String _formatoCantidad(double c) => c == c.roundToDouble() ? c.toStringAsFixed(0) : c.toString();
+
+  @override
+  Widget build(BuildContext context) {
+    final articulos = widget.categoria.articulos;
+    final total = widget.categoria.totalArticulos;
+
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(widget.categoria.nombre),
+      ),
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: () => _agregarOEditarArticulo(),
+        icon: const Icon(Icons.add),
+        label: const Text('Artículo'),
+      ),
+      body: Column(
+        children: [
+          Card(
+            margin: const EdgeInsets.all(16),
+            elevation: 2,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+            child: Padding(
+              padding: const EdgeInsets.all(20),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('Total de la lista', style: TextStyle(color: Colors.black54)),
+                  const SizedBox(height: 4),
+                  Text('\$${total.toStringAsFixed(2)}',
+                      style: const TextStyle(fontSize: 26, fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 16),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      OutlinedButton.icon(
+                        onPressed: articulos.isEmpty ? null : () => _usarComoPresupuesto(proximoMes: false),
+                        icon: const Icon(Icons.calendar_today, size: 16),
+                        label: const Text('Usar en mes actual'),
+                      ),
+                      OutlinedButton.icon(
+                        onPressed: articulos.isEmpty ? null : () => _usarComoPresupuesto(proximoMes: true),
+                        icon: const Icon(Icons.calendar_month, size: 16),
+                        label: const Text('Usar en próximo mes'),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+          Expanded(
+            child: articulos.isEmpty
+                ? const Center(
+                    child: Padding(
+                      padding: EdgeInsets.all(24),
+                      child: Text(
+                        'Todavía no agregas artículos. Usa el botón "+" para empezar tu lista.',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(color: Colors.black54),
+                      ),
+                    ),
+                  )
+                : ListView.builder(
+                    padding: const EdgeInsets.fromLTRB(16, 0, 16, 90),
+                    itemCount: articulos.length,
+                    itemBuilder: (context, i) {
+                      final a = articulos[i];
+                      return Dismissible(
+                        key: ValueKey(a.id),
+                        direction: DismissDirection.endToStart,
+                        background: Container(
+                          alignment: Alignment.centerRight,
+                          padding: const EdgeInsets.symmetric(horizontal: 20),
+                          margin: const EdgeInsets.only(bottom: 8),
+                          decoration: BoxDecoration(
+                            color: Colors.red.shade400,
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: const Icon(Icons.delete, color: Colors.white),
+                        ),
+                        onDismissed: (_) => _eliminarArticulo(a),
+                        child: Card(
+                          margin: const EdgeInsets.only(bottom: 8),
+                          child: ListTile(
+                            onTap: () => _agregarOEditarArticulo(existente: a),
+                            title: Text(a.nombre),
+                            subtitle: Text(
+                              '\$${a.precio.toStringAsFixed(2)} x ${_formatoCantidad(a.cantidad)}',
+                            ),
+                            trailing: Text('\$${a.subtotal.toStringAsFixed(2)}',
+                                style: const TextStyle(fontWeight: FontWeight.bold)),
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+          ),
+        ],
       ),
     );
   }
