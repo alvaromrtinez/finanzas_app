@@ -135,6 +135,7 @@ class Gasto {
   double monto;
   DateTime fecha;
   String nota;
+  List<ArticuloItem> detalle; // desglose opcional, ej. lista de mercado
 
   Gasto({
     required this.id,
@@ -142,7 +143,8 @@ class Gasto {
     required this.monto,
     required this.fecha,
     this.nota = '',
-  });
+    List<ArticuloItem>? detalle,
+  }) : detalle = detalle ?? [];
 
   Map<String, dynamic> toJson() => {
         'id': id,
@@ -150,6 +152,7 @@ class Gasto {
         'monto': monto,
         'fecha': fecha.toIso8601String(),
         'nota': nota,
+        'detalle': detalle.map((a) => a.toJson()).toList(),
       };
 
   factory Gasto.fromJson(Map<String, dynamic> json) => Gasto(
@@ -158,7 +161,158 @@ class Gasto {
         monto: (json['monto'] as num).toDouble(),
         fecha: DateTime.parse(json['fecha']),
         nota: json['nota'] ?? '',
+        detalle: (json['detalle'] as List<dynamic>? ?? [])
+            .map((e) => ArticuloItem.fromJson(e))
+            .toList(),
       );
+}
+
+/// Un artículo dentro de la lista de compras planeadas para la mudanza.
+class ArticuloMudanza {
+  String id;
+  String nombre;
+  double precioEstimado;
+  bool comprado;
+
+  ArticuloMudanza({
+    required this.id,
+    required this.nombre,
+    required this.precioEstimado,
+    this.comprado = false,
+  });
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'nombre': nombre,
+        'precioEstimado': precioEstimado,
+        'comprado': comprado,
+      };
+
+  factory ArticuloMudanza.fromJson(Map<String, dynamic> json) => ArticuloMudanza(
+        id: json['id'],
+        nombre: json['nombre'],
+        precioEstimado: (json['precioEstimado'] as num).toDouble(),
+        comprado: json['comprado'] as bool? ?? false,
+      );
+}
+
+/// Formatea una cantidad sin decimales innecesarios (ej. 2 en vez de 2.0).
+String formatoCantidad(double c) =>
+    c == c.roundToDouble() ? c.toStringAsFixed(0) : c.toString();
+
+/// Diálogo reutilizable para capturar un artículo (nombre, precio, cantidad).
+/// Se usa tanto en el detalle de un gasto como en las listas de artículos.
+Future<ArticuloItem?> mostrarDialogoArticulo(BuildContext context, {String tituloCampo = 'Nombre del artículo'}) {
+  final nombreCtrl = TextEditingController();
+  final precioCtrl = TextEditingController();
+  final cantidadCtrl = TextEditingController(text: '1');
+
+  return showDialog<ArticuloItem>(
+    context: context,
+    builder: (context) => AlertDialog(
+      title: const Text('Agregar artículo'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          TextField(
+            controller: nombreCtrl,
+            autofocus: true,
+            decoration: InputDecoration(labelText: tituloCampo),
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: precioCtrl,
+                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                  decoration: const InputDecoration(labelText: 'Precio', prefixText: '\$ '),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: TextField(
+                  controller: cantidadCtrl,
+                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                  decoration: const InputDecoration(labelText: 'Cantidad'),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancelar')),
+        ElevatedButton(
+          onPressed: () {
+            final nombre = nombreCtrl.text.trim();
+            final precio = double.tryParse(precioCtrl.text) ?? 0;
+            final cantidad = double.tryParse(cantidadCtrl.text) ?? 1;
+            if (nombre.isEmpty || precio <= 0) return;
+            Navigator.pop(
+              context,
+              ArticuloItem(
+                id: DateTime.now().microsecondsSinceEpoch.toString(),
+                nombre: nombre,
+                precio: precio,
+                cantidad: cantidad,
+              ),
+            );
+          },
+          child: const Text('Agregar'),
+        ),
+      ],
+    ),
+  );
+}
+
+/// Muestra en solo lectura el desglose de artículos de un gasto ya registrado
+/// (por ejemplo, la lista de mercado que se compró ese día).
+void mostrarDetalleGasto(BuildContext context, Gasto g) {
+  showModalBottomSheet(
+    context: context,
+    isScrollControlled: true,
+    shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+    builder: (context) {
+      return Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('${g.categoria} · ${formatoFecha(g.fecha)}',
+                style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+            const SizedBox(height: 12),
+            ConstrainedBox(
+              constraints: BoxConstraints(maxHeight: MediaQuery.of(context).size.height * 0.5),
+              child: ListView(
+                shrinkWrap: true,
+                children: g.detalle
+                    .map((a) => ListTile(
+                          dense: true,
+                          contentPadding: EdgeInsets.zero,
+                          title: Text(a.nombre),
+                          subtitle: Text('\$${a.precio.toStringAsFixed(2)} x ${formatoCantidad(a.cantidad)}'),
+                          trailing: Text('\$${a.subtotal.toStringAsFixed(2)}',
+                              style: const TextStyle(fontWeight: FontWeight.w600)),
+                        ))
+                    .toList(),
+              ),
+            ),
+            const Divider(),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                const Text('Total', style: TextStyle(fontWeight: FontWeight.bold)),
+                Text('\$${g.monto.toStringAsFixed(2)}',
+                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+              ],
+            ),
+          ],
+        ),
+      );
+    },
+  );
 }
 
 List<CategoriaConfig> categoriasPorDefecto() => [
@@ -189,16 +343,18 @@ class HomePage extends StatefulWidget {
 class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin {
   List<CategoriaConfig> categorias = [];
   List<Gasto> gastos = [];
+  List<ArticuloMudanza> mudanza = [];
   bool cargando = true;
   late TabController _tabController;
 
   static const _keyCategorias = 'categorias_finanzas_v2';
   static const _keyGastos = 'gastos_finanzas_v1';
+  static const _keyMudanza = 'mudanza_articulos_v1';
 
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 3, vsync: this);
+    _tabController = TabController(length: 4, vsync: this);
     _cargarDatos();
   }
 
@@ -225,6 +381,12 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
       gastos = lista.map((e) => Gasto.fromJson(e)).toList();
     }
 
+    final dataMudanza = prefs.getString(_keyMudanza);
+    if (dataMudanza != null) {
+      final List<dynamic> lista = jsonDecode(dataMudanza);
+      mudanza = lista.map((e) => ArticuloMudanza.fromJson(e)).toList();
+    }
+
     setState(() => cargando = false);
   }
 
@@ -238,6 +400,12 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(
         _keyGastos, jsonEncode(gastos.map((g) => g.toJson()).toList()));
+  }
+
+  Future<void> _guardarMudanza() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(
+        _keyMudanza, jsonEncode(mudanza.map((a) => a.toJson()).toList()));
   }
 
   // --- Cálculos sobre el mes actual -----------------------------------
@@ -271,6 +439,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     final montoCtrl = TextEditingController();
     final notaCtrl = TextEditingController();
     DateTime fecha = DateTime.now();
+    List<ArticuloItem> detalleItems = [];
 
     final guardado = await showModalBottomSheet<bool>(
       context: context,
@@ -281,6 +450,11 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
       builder: (context) {
         return StatefulBuilder(
           builder: (context, setModalState) {
+            final sumaDetalle = detalleItems.fold(0.0, (s, a) => s + a.subtotal);
+            if (detalleItems.isNotEmpty) {
+              montoCtrl.text = sumaDetalle.toStringAsFixed(2);
+            }
+
             return Padding(
               padding: EdgeInsets.only(
                 left: 20,
@@ -288,89 +462,141 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
                 top: 20,
                 bottom: MediaQuery.of(context).viewInsets.bottom + 20,
               ),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  const Text('Registrar gasto',
-                      style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-                  const SizedBox(height: 16),
-                  DropdownButtonFormField<String>(
-                    value: categoriaSeleccionada,
-                    decoration: const InputDecoration(
-                      labelText: 'Categoría',
-                      border: OutlineInputBorder(),
-                    ),
-                    items: categorias
-                        .map((c) => DropdownMenuItem(
-                              value: c.nombre,
-                              child: Text(c.nombre),
-                            ))
-                        .toList(),
-                    onChanged: (v) =>
-                        setModalState(() => categoriaSeleccionada = v!),
-                  ),
-                  const SizedBox(height: 12),
-                  TextField(
-                    controller: montoCtrl,
-                    autofocus: true,
-                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                    decoration: const InputDecoration(
-                      labelText: 'Monto gastado',
-                      prefixText: '\$ ',
-                      border: OutlineInputBorder(),
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  InkWell(
-                    onTap: () async {
-                      final seleccionada = await showDatePicker(
-                        context: context,
-                        initialDate: fecha,
-                        firstDate: DateTime(fecha.year - 1),
-                        lastDate: DateTime(fecha.year + 1),
-                      );
-                      if (seleccionada != null) {
-                        setModalState(() => fecha = seleccionada);
-                      }
-                    },
-                    child: InputDecorator(
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    const Text('Registrar gasto',
+                        style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                    const SizedBox(height: 16),
+                    DropdownButtonFormField<String>(
+                      value: categoriaSeleccionada,
                       decoration: const InputDecoration(
-                        labelText: 'Fecha del gasto',
+                        labelText: 'Categoría',
                         border: OutlineInputBorder(),
-                        suffixIcon: Icon(Icons.calendar_today, size: 18),
                       ),
-                      child: Text(formatoFecha(fecha)),
+                      items: categorias
+                          .map((c) => DropdownMenuItem(
+                                value: c.nombre,
+                                child: Text(c.nombre),
+                              ))
+                          .toList(),
+                      onChanged: (v) =>
+                          setModalState(() => categoriaSeleccionada = v!),
                     ),
-                  ),
-                  const SizedBox(height: 12),
-                  TextField(
-                    controller: notaCtrl,
-                    decoration: const InputDecoration(
-                      labelText: 'Nota (opcional)',
-                      border: OutlineInputBorder(),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: montoCtrl,
+                      autofocus: detalleItems.isEmpty,
+                      readOnly: detalleItems.isNotEmpty,
+                      keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                      decoration: InputDecoration(
+                        labelText: 'Monto gastado',
+                        prefixText: '\$ ',
+                        border: const OutlineInputBorder(),
+                        helperText: detalleItems.isNotEmpty
+                            ? 'Se calcula solo, según los artículos de abajo'
+                            : null,
+                      ),
                     ),
-                  ),
-                  const SizedBox(height: 20),
-                  ElevatedButton(
-                    onPressed: () {
-                      final monto = double.tryParse(montoCtrl.text) ?? 0;
-                      if (monto <= 0) return;
-                      gastos.add(Gasto(
-                        id: DateTime.now().microsecondsSinceEpoch.toString(),
-                        categoria: categoriaSeleccionada,
-                        monto: monto,
-                        fecha: fecha,
-                        nota: notaCtrl.text.trim(),
-                      ));
-                      Navigator.pop(context, true);
-                    },
-                    child: const Padding(
-                      padding: EdgeInsets.symmetric(vertical: 12),
-                      child: Text('Guardar gasto'),
+                    const SizedBox(height: 12),
+                    InkWell(
+                      onTap: () async {
+                        final seleccionada = await showDatePicker(
+                          context: context,
+                          initialDate: fecha,
+                          firstDate: DateTime(fecha.year - 1),
+                          lastDate: DateTime(fecha.year + 1),
+                        );
+                        if (seleccionada != null) {
+                          setModalState(() => fecha = seleccionada);
+                        }
+                      },
+                      child: InputDecorator(
+                        decoration: const InputDecoration(
+                          labelText: 'Fecha del gasto',
+                          border: OutlineInputBorder(),
+                          suffixIcon: Icon(Icons.calendar_today, size: 18),
+                        ),
+                        child: Text(formatoFecha(fecha)),
+                      ),
                     ),
-                  ),
-                ],
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: notaCtrl,
+                      decoration: const InputDecoration(
+                        labelText: 'Nota (opcional)',
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text('Detalle de la compra (opcional)',
+                            style: TextStyle(fontWeight: FontWeight.w600)),
+                        TextButton.icon(
+                          onPressed: () async {
+                            final item = await mostrarDialogoArticulo(context);
+                            if (item != null) setModalState(() => detalleItems.add(item));
+                          },
+                          icon: const Icon(Icons.add, size: 18),
+                          label: const Text('Agregar'),
+                        ),
+                      ],
+                    ),
+                    Text(
+                      'Útil para tu lista de mercado: anota cada producto que compraste ese día.',
+                      style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+                    ),
+                    ...detalleItems.map((it) => ListTile(
+                          dense: true,
+                          contentPadding: EdgeInsets.zero,
+                          title: Text(it.nombre),
+                          subtitle: Text(
+                              '\$${it.precio.toStringAsFixed(2)} x ${formatoCantidad(it.cantidad)}'),
+                          trailing: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Text('\$${it.subtotal.toStringAsFixed(2)}'),
+                              IconButton(
+                                icon: const Icon(Icons.close, size: 18),
+                                onPressed: () => setModalState(() => detalleItems.remove(it)),
+                              ),
+                            ],
+                          ),
+                        )),
+                    if (detalleItems.isNotEmpty)
+                      Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 4),
+                        child: Text('Total del detalle: \$${sumaDetalle.toStringAsFixed(2)}',
+                            style: const TextStyle(fontWeight: FontWeight.bold)),
+                      ),
+                    const SizedBox(height: 20),
+                    ElevatedButton(
+                      onPressed: () {
+                        final monto = detalleItems.isNotEmpty
+                            ? sumaDetalle
+                            : (double.tryParse(montoCtrl.text) ?? 0);
+                        if (monto <= 0) return;
+                        gastos.add(Gasto(
+                          id: DateTime.now().microsecondsSinceEpoch.toString(),
+                          categoria: categoriaSeleccionada,
+                          monto: monto,
+                          fecha: fecha,
+                          nota: notaCtrl.text.trim(),
+                          detalle: List<ArticuloItem>.from(detalleItems),
+                        ));
+                        Navigator.pop(context, true);
+                      },
+                      child: const Padding(
+                        padding: EdgeInsets.symmetric(vertical: 12),
+                        child: Text('Guardar gasto'),
+                      ),
+                    ),
+                  ],
+                ),
               ),
             );
           },
@@ -556,6 +782,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
         'fechaExportacion': DateTime.now().toIso8601String(),
         'categorias': categorias.map((c) => c.toJson()).toList(),
         'gastos': gastos.map((g) => g.toJson()).toList(),
+        'mudanza': mudanza.map((a) => a.toJson()).toList(),
       };
 
       final directorio = await getTemporaryDirectory();
@@ -597,6 +824,9 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
       final nuevosGastos = (contenido['gastos'] as List<dynamic>)
           .map((e) => Gasto.fromJson(e))
           .toList();
+      final nuevaMudanza = (contenido['mudanza'] as List<dynamic>? ?? [])
+          .map((e) => ArticuloMudanza.fromJson(e))
+          .toList();
 
       if (!mounted) return;
       final confirmar = await showDialog<bool>(
@@ -604,7 +834,8 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
         builder: (context) => AlertDialog(
           title: const Text('Importar respaldo'),
           content: Text(
-              'Se encontraron ${nuevasCategorias.length} categorías y ${nuevosGastos.length} gastos. '
+              'Se encontraron ${nuevasCategorias.length} categorías, ${nuevosGastos.length} gastos '
+              'y ${nuevaMudanza.length} artículos de mudanza. '
               'Esto reemplazará TODA la información que tienes actualmente en la app. ¿Continuar?'),
           actions: [
             TextButton(
@@ -621,9 +852,11 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
         setState(() {
           categorias = nuevasCategorias;
           gastos = nuevosGastos;
+          mudanza = nuevaMudanza;
         });
         await _guardarCategorias();
         await _guardarGastos();
+        await _guardarMudanza();
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(content: Text('Respaldo importado correctamente')),
@@ -654,6 +887,98 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
         ),
       ),
     );
+  }
+
+  // --- Mudanza -------------------------------------------------------------
+
+  Future<void> _agregarOEditarArticuloMudanza({ArticuloMudanza? existente}) async {
+    final nombreCtrl = TextEditingController(text: existente?.nombre ?? '');
+    final precioCtrl = TextEditingController(
+        text: existente == null ? '' : existente.precioEstimado.toStringAsFixed(2));
+
+    final guardado = await showModalBottomSheet<bool>(
+      context: context,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (context) {
+        return Padding(
+          padding: EdgeInsets.only(
+            left: 20,
+            right: 20,
+            top: 20,
+            bottom: MediaQuery.of(context).viewInsets.bottom + 20,
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text(existente == null ? 'Nuevo artículo de mudanza' : 'Editar artículo',
+                  style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+              const SizedBox(height: 16),
+              TextField(
+                controller: nombreCtrl,
+                autofocus: true,
+                decoration: const InputDecoration(
+                  labelText: 'Artículo (ej. cajas, cinta, camión de mudanza)',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: precioCtrl,
+                keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                decoration: const InputDecoration(
+                  labelText: 'Precio estimado',
+                  prefixText: '\$ ',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 20),
+              ElevatedButton(
+                onPressed: () {
+                  final nombre = nombreCtrl.text.trim();
+                  final precio = double.tryParse(precioCtrl.text) ?? 0;
+                  if (nombre.isEmpty || precio <= 0) return;
+
+                  if (existente != null) {
+                    existente.nombre = nombre;
+                    existente.precioEstimado = precio;
+                  } else {
+                    mudanza.add(ArticuloMudanza(
+                      id: DateTime.now().microsecondsSinceEpoch.toString(),
+                      nombre: nombre,
+                      precioEstimado: precio,
+                    ));
+                  }
+                  Navigator.pop(context, true);
+                },
+                child: const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 12),
+                  child: Text('Guardar'),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+
+    if (guardado == true) {
+      await _guardarMudanza();
+      setState(() {});
+    }
+  }
+
+  Future<void> _eliminarArticuloMudanza(ArticuloMudanza a) async {
+    setState(() => mudanza.removeWhere((e) => e.id == a.id));
+    await _guardarMudanza();
+  }
+
+  Future<void> _toggleCompradoMudanza(ArticuloMudanza a) async {
+    setState(() => a.comprado = !a.comprado);
+    await _guardarMudanza();
   }
 
   @override
@@ -694,10 +1019,12 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
         ],
         bottom: TabBar(
           controller: _tabController,
+          isScrollable: true,
           tabs: const [
             Tab(text: 'Este mes'),
             Tab(text: 'Gráficas'),
             Tab(text: 'Próximo mes'),
+            Tab(text: 'Mudanza'),
           ],
         ),
       ),
@@ -715,6 +1042,12 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
               onPressed: _agregarCategoria,
               icon: const Icon(Icons.add),
               label: const Text('Categoría'),
+            );
+          } else if (_tabController.index == 3) {
+            return FloatingActionButton.extended(
+              onPressed: () => _agregarOEditarArticuloMudanza(),
+              icon: const Icon(Icons.add),
+              label: const Text('Artículo'),
             );
           }
           return const SizedBox.shrink();
@@ -745,6 +1078,12 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
             onEditarPresupuesto: (c) => _editarPresupuesto(c, proximoMes: true),
             onAplicar: _aplicarPresupuestoProximoMes,
             onVerArticulos: _abrirListaArticulos,
+          ),
+          _MudanzaTab(
+            articulos: mudanza,
+            onEditar: (a) => _agregarOEditarArticuloMudanza(existente: a),
+            onEliminar: _eliminarArticuloMudanza,
+            onToggle: _toggleCompradoMudanza,
           ),
         ],
       ),
@@ -839,10 +1178,15 @@ class _EsteMesTab extends StatelessWidget {
               child: Card(
                 margin: const EdgeInsets.only(bottom: 8),
                 child: ListTile(
+                  onTap: g.detalle.isEmpty ? null : () => mostrarDetalleGasto(context, g),
                   leading: Icon(cat.icono, color: Theme.of(context).colorScheme.primary),
                   title: Text(g.categoria),
                   subtitle: Text(
-                    g.nota.isEmpty ? formatoFecha(g.fecha) : '${formatoFecha(g.fecha)} · ${g.nota}',
+                    [
+                      formatoFecha(g.fecha),
+                      if (g.nota.isNotEmpty) g.nota,
+                      if (g.detalle.isNotEmpty) '${g.detalle.length} artículos (toca para ver)',
+                    ].join(' · '),
                   ),
                   trailing: Text('\$${g.monto.toStringAsFixed(2)}',
                       style: const TextStyle(fontWeight: FontWeight.bold)),
@@ -1099,6 +1443,134 @@ class _ProximoMesTab extends StatelessWidget {
                 ),
               ),
             )),
+        const SizedBox(height: 80),
+      ],
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// PESTAÑA: MUDANZA
+// ---------------------------------------------------------------------------
+
+/// Lista independiente de artículos a comprar para la mudanza, con precio
+/// estimado, para ir anticipando cuánto va a costar en total.
+class _MudanzaTab extends StatelessWidget {
+  final List<ArticuloMudanza> articulos;
+  final void Function(ArticuloMudanza) onEditar;
+  final void Function(ArticuloMudanza) onEliminar;
+  final void Function(ArticuloMudanza) onToggle;
+
+  const _MudanzaTab({
+    required this.articulos,
+    required this.onEditar,
+    required this.onEliminar,
+    required this.onToggle,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final totalEstimado = articulos.fold(0.0, (s, a) => s + a.precioEstimado);
+    final totalComprado =
+        articulos.where((a) => a.comprado).fold(0.0, (s, a) => s + a.precioEstimado);
+    final totalPendiente = totalEstimado - totalComprado;
+
+    return ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        Card(
+          elevation: 2,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          child: Padding(
+            padding: const EdgeInsets.all(20),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('Presupuesto de la mudanza', style: TextStyle(color: Colors.black54)),
+                const SizedBox(height: 8),
+                Text('\$${totalEstimado.toStringAsFixed(2)}',
+                    style: const TextStyle(fontSize: 26, fontWeight: FontWeight.bold)),
+                const SizedBox(height: 4),
+                const Text(
+                  'Anota aquí todo lo que necesitas comprar para la mudanza (cajas, servicio de '
+                  'camión, empaque, etc.) para ir anticipando cuánto vas a gastar en total.',
+                  style: TextStyle(color: Colors.black54, fontSize: 13),
+                ),
+                const SizedBox(height: 16),
+                Row(
+                  children: [
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text('Ya comprado', style: TextStyle(fontSize: 12, color: Colors.black54)),
+                          Text('\$${totalComprado.toStringAsFixed(2)}',
+                              style: TextStyle(
+                                  fontWeight: FontWeight.bold, color: Colors.green.shade700)),
+                        ],
+                      ),
+                    ),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text('Falta comprar', style: TextStyle(fontSize: 12, color: Colors.black54)),
+                          Text('\$${totalPendiente.toStringAsFixed(2)}',
+                              style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.orange)),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 20),
+        const Text('Artículos', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+        const SizedBox(height: 8),
+        if (articulos.isEmpty)
+          const Padding(
+            padding: EdgeInsets.symmetric(vertical: 12),
+            child: Text(
+              'Todavía no agregas artículos para la mudanza. Usa el botón "+" para empezar tu lista.',
+              style: TextStyle(color: Colors.black54),
+            ),
+          )
+        else
+          ...articulos.map((a) => Dismissible(
+                key: ValueKey(a.id),
+                direction: DismissDirection.endToStart,
+                background: Container(
+                  alignment: Alignment.centerRight,
+                  padding: const EdgeInsets.symmetric(horizontal: 20),
+                  margin: const EdgeInsets.only(bottom: 8),
+                  decoration:
+                      BoxDecoration(color: Colors.red.shade400, borderRadius: BorderRadius.circular(12)),
+                  child: const Icon(Icons.delete, color: Colors.white),
+                ),
+                onDismissed: (_) => onEliminar(a),
+                child: Card(
+                  margin: const EdgeInsets.only(bottom: 8),
+                  child: ListTile(
+                    onTap: () => onEditar(a),
+                    leading: Checkbox(
+                      value: a.comprado,
+                      onChanged: (_) => onToggle(a),
+                    ),
+                    title: Text(
+                      a.nombre,
+                      style: TextStyle(
+                        decoration: a.comprado ? TextDecoration.lineThrough : null,
+                        color: a.comprado ? Colors.black45 : null,
+                      ),
+                    ),
+                    subtitle: Text(a.comprado ? 'Comprado' : 'Pendiente'),
+                    trailing: Text('\$${a.precioEstimado.toStringAsFixed(2)}',
+                        style: const TextStyle(fontWeight: FontWeight.bold)),
+                  ),
+                ),
+              )),
         const SizedBox(height: 80),
       ],
     );
