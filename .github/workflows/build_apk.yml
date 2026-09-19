@@ -36,19 +36,26 @@ jobs:
       - name: Generar plataforma Android
         run: flutter create --platforms android .
 
-      # 5. Actualiza la versión de Kotlin: la que trae la plantilla por defecto
-      #    es demasiado vieja para el paquete shared_preferences.
+      # 5. Actualiza la versión de Kotlin a una compatible con la versión de
+      #    Flutter que estamos usando (las plantillas nuevas a veces definen
+      #    la versión en distintos archivos según cómo se generó el proyecto).
       - name: Actualizar versión de Kotlin
         run: |
+          KOTLIN_VERSION="2.2.20"
           if [ -f android/settings.gradle ]; then
-            sed -i 's/id "org.jetbrains.kotlin.android" version "[^"]*"/id "org.jetbrains.kotlin.android" version "1.9.24"/' android/settings.gradle
+            sed -i "s/id \"org.jetbrains.kotlin.android\" version \"[^\"]*\"/id \"org.jetbrains.kotlin.android\" version \"$KOTLIN_VERSION\"/" android/settings.gradle
           fi
           if [ -f android/settings.gradle.kts ]; then
-            sed -i 's/id("org.jetbrains.kotlin.android") version "[^"]*"/id("org.jetbrains.kotlin.android") version "1.9.24"/' android/settings.gradle.kts
+            sed -i "s/id(\"org.jetbrains.kotlin.android\") version \"[^\"]*\"/id(\"org.jetbrains.kotlin.android\") version \"$KOTLIN_VERSION\"/" android/settings.gradle.kts
           fi
           if [ -f android/build.gradle ]; then
-            sed -i "s/ext.kotlin_version = '[^']*'/ext.kotlin_version = '1.9.24'/" android/build.gradle
+            sed -i "s/ext.kotlin_version = '[^']*'/ext.kotlin_version = '$KOTLIN_VERSION'/" android/build.gradle
           fi
+          if [ -f android/gradle/libs.versions.toml ]; then
+            sed -i "s/^kotlin = \"[^\"]*\"/kotlin = \"$KOTLIN_VERSION\"/" android/gradle/libs.versions.toml
+          fi
+          echo "--- Versión de Kotlin quedó así en cada archivo (si existe): ---"
+          grep -rn "kotlin.android\|kotlin_version\|^kotlin = " android/settings.gradle android/settings.gradle.kts android/build.gradle android/gradle/libs.versions.toml 2>/dev/null || true
 
       # 6. Corrige un problema conocido: a veces el runner de GitHub descarga
       #    un archivo android.jar corrupto para la plataforma Android 35,
