@@ -62,6 +62,7 @@ class CategoriaConfig {
   double estimadoMesActual;
   double estimadoProximoMes;
   List<ArticuloItem> articulos;
+  String nota; // anotación libre, útil p. ej. para distinguir a qué crédito se refiere
 
   CategoriaConfig({
     required this.nombre,
@@ -69,6 +70,7 @@ class CategoriaConfig {
     this.estimadoMesActual = 0,
     this.estimadoProximoMes = 0,
     List<ArticuloItem>? articulos,
+    this.nota = '',
   }) : articulos = articulos ?? [];
 
   /// Suma de (precio x cantidad) de todos los artículos listados en esta
@@ -83,6 +85,7 @@ class CategoriaConfig {
         'estimadoMesActual': estimadoMesActual,
         'estimadoProximoMes': estimadoProximoMes,
         'articulos': articulos.map((a) => a.toJson()).toList(),
+        'nota': nota,
       };
 
   factory CategoriaConfig.fromJson(Map<String, dynamic> json) =>
@@ -94,6 +97,7 @@ class CategoriaConfig {
         articulos: (json['articulos'] as List<dynamic>? ?? [])
             .map((e) => ArticuloItem.fromJson(e))
             .toList(),
+        nota: json['nota'] ?? '',
       );
 }
 
@@ -202,15 +206,18 @@ String formatoCantidad(double c) =>
 
 /// Diálogo reutilizable para capturar un artículo (nombre, precio, cantidad).
 /// Se usa tanto en el detalle de un gasto como en las listas de artículos.
-Future<ArticuloItem?> mostrarDialogoArticulo(BuildContext context, {String tituloCampo = 'Nombre del artículo'}) {
-  final nombreCtrl = TextEditingController();
-  final precioCtrl = TextEditingController();
-  final cantidadCtrl = TextEditingController(text: '1');
+Future<ArticuloItem?> mostrarDialogoArticulo(BuildContext context,
+    {String tituloCampo = 'Nombre del artículo', ArticuloItem? existente}) {
+  final nombreCtrl = TextEditingController(text: existente?.nombre ?? '');
+  final precioCtrl =
+      TextEditingController(text: existente == null ? '' : existente.precio.toStringAsFixed(2));
+  final cantidadCtrl =
+      TextEditingController(text: existente == null ? '1' : formatoCantidad(existente.cantidad));
 
   return showDialog<ArticuloItem>(
     context: context,
     builder: (context) => AlertDialog(
-      title: const Text('Agregar artículo'),
+      title: Text(existente == null ? 'Agregar artículo' : 'Editar artículo'),
       content: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
@@ -252,66 +259,17 @@ Future<ArticuloItem?> mostrarDialogoArticulo(BuildContext context, {String titul
             Navigator.pop(
               context,
               ArticuloItem(
-                id: DateTime.now().microsecondsSinceEpoch.toString(),
+                id: existente?.id ?? DateTime.now().microsecondsSinceEpoch.toString(),
                 nombre: nombre,
                 precio: precio,
                 cantidad: cantidad,
               ),
             );
           },
-          child: const Text('Agregar'),
+          child: Text(existente == null ? 'Agregar' : 'Guardar'),
         ),
       ],
     ),
-  );
-}
-
-/// Muestra en solo lectura el desglose de artículos de un gasto ya registrado
-/// (por ejemplo, la lista de mercado que se compró ese día).
-void mostrarDetalleGasto(BuildContext context, Gasto g) {
-  showModalBottomSheet(
-    context: context,
-    isScrollControlled: true,
-    shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
-    builder: (context) {
-      return Padding(
-        padding: const EdgeInsets.all(20),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('${g.categoria} · ${formatoFecha(g.fecha)}',
-                style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-            const SizedBox(height: 12),
-            ConstrainedBox(
-              constraints: BoxConstraints(maxHeight: MediaQuery.of(context).size.height * 0.5),
-              child: ListView(
-                shrinkWrap: true,
-                children: g.detalle
-                    .map((a) => ListTile(
-                          dense: true,
-                          contentPadding: EdgeInsets.zero,
-                          title: Text(a.nombre),
-                          subtitle: Text('\$${a.precio.toStringAsFixed(2)} x ${formatoCantidad(a.cantidad)}'),
-                          trailing: Text('\$${a.subtotal.toStringAsFixed(2)}',
-                              style: const TextStyle(fontWeight: FontWeight.w600)),
-                        ))
-                    .toList(),
-              ),
-            ),
-            const Divider(),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                const Text('Total', style: TextStyle(fontWeight: FontWeight.bold)),
-                Text('\$${g.monto.toStringAsFixed(2)}',
-                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-              ],
-            ),
-          ],
-        ),
-      );
-    },
   );
 }
 
@@ -433,13 +391,15 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
 
   // --- Acciones ----------------------------------------------------------
 
-  Future<void> _registrarGasto() async {
+  Future<void> _registrarOEditarGasto({Gasto? existente}) async {
     if (categorias.isEmpty) return;
-    String categoriaSeleccionada = categorias.first.nombre;
-    final montoCtrl = TextEditingController();
-    final notaCtrl = TextEditingController();
-    DateTime fecha = DateTime.now();
-    List<ArticuloItem> detalleItems = [];
+    String categoriaSeleccionada = existente?.categoria ?? categorias.first.nombre;
+    final montoCtrl = TextEditingController(
+        text: existente == null ? '' : existente.monto.toStringAsFixed(2));
+    final notaCtrl = TextEditingController(text: existente?.nota ?? '');
+    DateTime fecha = existente?.fecha ?? DateTime.now();
+    List<ArticuloItem> detalleItems =
+        existente == null ? [] : List<ArticuloItem>.from(existente.detalle);
 
     final guardado = await showModalBottomSheet<bool>(
       context: context,
@@ -467,8 +427,8 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    const Text('Registrar gasto',
-                        style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                    Text(existente == null ? 'Registrar gasto' : 'Editar gasto',
+                        style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
                     const SizedBox(height: 16),
                     DropdownButtonFormField<String>(
                       value: categoriaSeleccionada,
@@ -553,6 +513,16 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
                     ...detalleItems.map((it) => ListTile(
                           dense: true,
                           contentPadding: EdgeInsets.zero,
+                          onTap: () async {
+                            final editado = await mostrarDialogoArticulo(context, existente: it);
+                            if (editado != null) {
+                              setModalState(() {
+                                it.nombre = editado.nombre;
+                                it.precio = editado.precio;
+                                it.cantidad = editado.cantidad;
+                              });
+                            }
+                          },
                           title: Text(it.nombre),
                           subtitle: Text(
                               '\$${it.precio.toStringAsFixed(2)} x ${formatoCantidad(it.cantidad)}'),
@@ -574,26 +544,56 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
                             style: const TextStyle(fontWeight: FontWeight.bold)),
                       ),
                     const SizedBox(height: 20),
-                    ElevatedButton(
-                      onPressed: () {
-                        final monto = detalleItems.isNotEmpty
-                            ? sumaDetalle
-                            : (double.tryParse(montoCtrl.text) ?? 0);
-                        if (monto <= 0) return;
-                        gastos.add(Gasto(
-                          id: DateTime.now().microsecondsSinceEpoch.toString(),
-                          categoria: categoriaSeleccionada,
-                          monto: monto,
-                          fecha: fecha,
-                          nota: notaCtrl.text.trim(),
-                          detalle: List<ArticuloItem>.from(detalleItems),
-                        ));
-                        Navigator.pop(context, true);
-                      },
-                      child: const Padding(
-                        padding: EdgeInsets.symmetric(vertical: 12),
-                        child: Text('Guardar gasto'),
-                      ),
+                    Row(
+                      children: [
+                        if (existente != null)
+                          Expanded(
+                            child: OutlinedButton(
+                              onPressed: () {
+                                gastos.removeWhere((e) => e.id == existente.id);
+                                Navigator.pop(context, true);
+                              },
+                              style: OutlinedButton.styleFrom(foregroundColor: Colors.red),
+                              child: const Padding(
+                                padding: EdgeInsets.symmetric(vertical: 12),
+                                child: Text('Eliminar'),
+                              ),
+                            ),
+                          ),
+                        if (existente != null) const SizedBox(width: 12),
+                        Expanded(
+                          flex: 2,
+                          child: ElevatedButton(
+                            onPressed: () {
+                              final monto = detalleItems.isNotEmpty
+                                  ? sumaDetalle
+                                  : (double.tryParse(montoCtrl.text) ?? 0);
+                              if (monto <= 0) return;
+                              if (existente != null) {
+                                existente.categoria = categoriaSeleccionada;
+                                existente.monto = monto;
+                                existente.fecha = fecha;
+                                existente.nota = notaCtrl.text.trim();
+                                existente.detalle = List<ArticuloItem>.from(detalleItems);
+                              } else {
+                                gastos.add(Gasto(
+                                  id: DateTime.now().microsecondsSinceEpoch.toString(),
+                                  categoria: categoriaSeleccionada,
+                                  monto: monto,
+                                  fecha: fecha,
+                                  nota: notaCtrl.text.trim(),
+                                  detalle: List<ArticuloItem>.from(detalleItems),
+                                ));
+                              }
+                              Navigator.pop(context, true);
+                            },
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(vertical: 12),
+                              child: Text(existente == null ? 'Guardar gasto' : 'Guardar cambios'),
+                            ),
+                          ),
+                        ),
+                      ],
                     ),
                   ],
                 ),
@@ -622,6 +622,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
           : (proximoMes ? cat.estimadoProximoMes : cat.estimadoMesActual)
               .toStringAsFixed(2),
     );
+    final notaCtrl = TextEditingController(text: cat.nota);
 
     final guardado = await showModalBottomSheet<bool>(
       context: context,
@@ -669,6 +670,15 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
                   border: OutlineInputBorder(),
                 ),
               ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: notaCtrl,
+                decoration: const InputDecoration(
+                  labelText: 'Anotación (opcional)',
+                  hintText: 'Ej. "Tarjeta Santander" o "Crédito del auto"',
+                  border: OutlineInputBorder(),
+                ),
+              ),
               const SizedBox(height: 20),
               ElevatedButton(
                 onPressed: () {
@@ -678,6 +688,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
                   } else {
                     cat.estimadoMesActual = valor;
                   }
+                  cat.nota = notaCtrl.text.trim();
                   Navigator.pop(context, true);
                 },
                 child: const Padding(
@@ -1033,7 +1044,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
         builder: (context, _) {
           if (_tabController.index == 0) {
             return FloatingActionButton.extended(
-              onPressed: _registrarGasto,
+              onPressed: _registrarOEditarGasto,
               icon: const Icon(Icons.add),
               label: const Text('Gasto'),
             );
@@ -1065,6 +1076,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
             onEditarPresupuesto: (c) => _editarPresupuesto(c, proximoMes: false),
             onEliminarCategoria: _eliminarCategoria,
             onEliminarGasto: _eliminarGasto,
+            onEditarGasto: (g) => _registrarOEditarGasto(existente: g),
             onVerArticulos: _abrirListaArticulos,
           ),
           _GraficasTab(
@@ -1104,6 +1116,7 @@ class _EsteMesTab extends StatelessWidget {
   final void Function(CategoriaConfig) onEditarPresupuesto;
   final void Function(CategoriaConfig) onEliminarCategoria;
   final void Function(Gasto) onEliminarGasto;
+  final void Function(Gasto) onEditarGasto;
   final void Function(CategoriaConfig) onVerArticulos;
 
   const _EsteMesTab({
@@ -1115,6 +1128,7 @@ class _EsteMesTab extends StatelessWidget {
     required this.onEditarPresupuesto,
     required this.onEliminarCategoria,
     required this.onEliminarGasto,
+    required this.onEditarGasto,
     required this.onVerArticulos,
   });
 
@@ -1178,14 +1192,14 @@ class _EsteMesTab extends StatelessWidget {
               child: Card(
                 margin: const EdgeInsets.only(bottom: 8),
                 child: ListTile(
-                  onTap: g.detalle.isEmpty ? null : () => mostrarDetalleGasto(context, g),
+                  onTap: () => onEditarGasto(g),
                   leading: Icon(cat.icono, color: Theme.of(context).colorScheme.primary),
                   title: Text(g.categoria),
                   subtitle: Text(
                     [
                       formatoFecha(g.fecha),
                       if (g.nota.isNotEmpty) g.nota,
-                      if (g.detalle.isNotEmpty) '${g.detalle.length} artículos (toca para ver)',
+                      if (g.detalle.isNotEmpty) '${g.detalle.length} artículos',
                     ].join(' · '),
                   ),
                   trailing: Text('\$${g.monto.toStringAsFixed(2)}',
@@ -1427,9 +1441,18 @@ class _ProximoMesTab extends StatelessWidget {
                   child: Icon(cat.icono, color: Theme.of(context).colorScheme.primary),
                 ),
                 title: Text(cat.nombre, style: const TextStyle(fontWeight: FontWeight.w600)),
-                subtitle: Text(cat.estimadoProximoMes == 0
-                    ? 'Sin planear todavía'
-                    : 'Planeado: \$${cat.estimadoProximoMes.toStringAsFixed(2)}'),
+                subtitle: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    if (cat.nota.isNotEmpty)
+                      Text(cat.nota,
+                          style: const TextStyle(
+                              fontSize: 12, fontStyle: FontStyle.italic, color: Colors.black54)),
+                    Text(cat.estimadoProximoMes == 0
+                        ? 'Sin planear todavía'
+                        : 'Planeado: \$${cat.estimadoProximoMes.toStringAsFixed(2)}'),
+                  ],
+                ),
                 trailing: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
@@ -1701,6 +1724,14 @@ class _CategoriaTile extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
+                if (categoria.nota.isNotEmpty) ...[
+                  Text(
+                    categoria.nota,
+                    style: const TextStyle(
+                        fontSize: 12, fontStyle: FontStyle.italic, color: Colors.black54),
+                  ),
+                  const SizedBox(height: 4),
+                ],
                 ClipRRect(
                   borderRadius: BorderRadius.circular(6),
                   child: LinearProgressIndicator(
