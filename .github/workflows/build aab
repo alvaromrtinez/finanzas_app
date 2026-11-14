@@ -1,0 +1,160 @@
+name: Build AAB (Google Play)
+
+# Genera un Android App Bundle (.aab) FIRMADO, listo para subir a Google Play.
+# No se lanza solo: Actions -> "Build AAB (Google Play)" -> Run workflow.
+#
+# Requiere (ver PLAY_STORE.md):
+#   Secretos:   KEYSTORE_BASE64, KEYSTORE_PASSWORD
+#   Variable:   ANDROID_PACKAGE   (tu ID de aplicación, por ejemplo com.tunombre.finanzas)
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    env:
+      APP_ID: ${{ vars.ANDROID_PACKAGE }}
+      KEY_ALIAS: upload
+
+    steps:
+      # 1. Descarga el código del repositorio
+      - name: Clonar repositorio
+        uses: actions/checkout@v4
+
+      # 2. Falla pronto, con un mensaje claro, si falta algo de la configuración
+      - name: Verificar configuración de paquete y firma
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+        run: |
+          fail() { echo "::error::$1"; exit 1; }
+          [ -n "$APP_ID" ] || fail "Falta la variable ANDROID_PACKAGE (Settings > Secrets and variables > Actions > Variables)."
+          case "$APP_ID" in
+            com.example.*) fail "Google Play no acepta IDs que empiecen con com.example. Elige uno propio en ANDROID_PACKAGE." ;;
+          esac
+          echo "$APP_ID" | grep -Eq '^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$' \
+            || fail "ANDROID_PACKAGE no es válido: usa minúsculas, números o guion bajo, separados por puntos (ej. com.tunombre.finanzas)."
+          [ -n "$KEYSTORE_BASE64" ] || fail "Falta el secreto KEYSTORE_BASE64. Corre antes el workflow 'Crear keystore'."
+          [ -n "$KEYSTORE_PASSWORD" ] || fail "Falta el secreto KEYSTORE_PASSWORD."
+          echo "ID de aplicación: $APP_ID"
+
+      # 3. Instala Java (requerido para compilar apps Android y para keytool)
+      - name: Configurar Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
+      # 4. Instala Flutter (misma versión que usa build_apk.yml)
+      - name: Configurar Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.47.1'
+          channel: 'stable'
+
+      # 5. Genera la carpeta android/ (el repo solo guarda pubspec.yaml y lib/)
+      - name: Generar plataforma Android
+        run: flutter create --platforms android --project-name finanzas_app .
+
+      # 6. Sube Kotlin a una versión que Flutter acepte (igual que build_apk.yml)
+      - name: Actualizar versión de Kotlin
+        run: |
+          KOTLIN_VERSION="2.2.20"
+          if [ -f android/settings.gradle ]; then
+            sed -i "s/id \"org.jetbrains.kotlin.android\" version \"[^\"]*\"/id \"org.jetbrains.kotlin.android\" version \"$KOTLIN_VERSION\"/" android/settings.gradle
+          fi
+          if [ -f android/settings.gradle.kts ]; then
+            sed -i "s/id(\"org.jetbrains.kotlin.android\") version \"[^\"]*\"/id(\"org.jetbrains.kotlin.android\") version \"$KOTLIN_VERSION\"/" android/settings.gradle.kts
+          fi
+          if [ -f android/build.gradle ]; then
+            sed -i "s/ext.kotlin_version = '[^']*'/ext.kotlin_version = '$KOTLIN_VERSION'/" android/build.gradle
+          fi
+          if [ -f android/gradle/libs.versions.toml ]; then
+            sed -i "s/^kotlin = \"[^\"]*\"/kotlin = \"$KOTLIN_VERSION\"/" android/gradle/libs.versions.toml
+          fi
+
+      # 7. Recupera la llave de subida desde el secreto y comprueba que abre bien
+      - name: Preparar llave de firma
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+        run: |
+          echo "$KEYSTORE_BASE64" | tr -d ' \r\n' | base64 --decode > "$RUNNER_TEMP/upload-keystore.jks"
+          keytool -list -keystore "$RUNNER_TEMP/upload-keystore.jks" \
+            -storepass "$KEYSTORE_PASSWORD" -alias "$KEY_ALIAS" > /dev/null \
+            || { echo "::error::No se pudo abrir el keystore: revisa KEYSTORE_BASE64, KEYSTORE_PASSWORD y que el alias sea 'upload'."; exit 1; }
+          echo "KEYSTORE_PATH=$RUNNER_TEMP/upload-keystore.jks" >> "$GITHUB_ENV"
+
+      # 8. Ajusta android/app/build.gradle.kts: ID propio y firma release.
+      #    La plantilla de Flutter firma el release con la llave de depuración,
+      #    y Google Play rechaza esos paquetes.
+      - name: Configurar ID de aplicación y firma release
+        run: |
+          python3 - <<'PY'
+          import os, re, sys, pathlib
+
+          p = pathlib.Path("android/app/build.gradle.kts")
+          if not p.exists():
+              sys.exit("::error::No existe android/app/build.gradle.kts (la plantilla de Flutter cambió). Manda el log para ajustarlo.")
+          s = p.read_text()
+          app_id = os.environ["APP_ID"]
+
+          firma = "\n".join([
+              '    signingConfigs {',
+              '        create("release") {',
+              '            storeFile = file(System.getenv("KEYSTORE_PATH"))',
+              '            storePassword = System.getenv("KEYSTORE_PASSWORD")',
+              '            keyAlias = System.getenv("KEY_ALIAS")',
+              '            keyPassword = System.getenv("KEYSTORE_PASSWORD")',
+              '        }',
+              '    }',
+          ]) + "\n\n"
+
+          s, n1 = re.subn(r'applicationId\s*=\s*"[^"]*"', lambda m: 'applicationId = "%s"' % app_id, s, count=1)
+          s, n2 = re.subn(r'(\n)([ \t]*)buildTypes\s*\{', lambda m: "\n" + firma + m.group(2) + "buildTypes {", s, count=1)
+          s, n3 = re.subn(r'signingConfig\s*=\s*signingConfigs\.getByName\("debug"\)',
+                          'signingConfig = signingConfigs.getByName("release")', s)
+
+          if not (n1 and n2 and n3):
+              print(s)
+              sys.exit("::error::No pude aplicar el parche (applicationId=%d, signingConfigs=%d, release=%d). Manda el log para ajustarlo." % (n1, n2, n3))
+
+          p.write_text(s)
+          print("Parche aplicado a", p)
+          PY
+          echo "----- android/app/build.gradle.kts (sin secretos) -----"
+          cat android/app/build.gradle.kts
+
+      # 9. Descarga las dependencias del proyecto
+      - name: Instalar dependencias
+        run: flutter pub get
+
+      # 10. Compila el bundle firmado.
+      #     --build-number sube solo en cada ejecución: Google Play exige un
+      #     número de versión mayor en cada subida.
+      #     --no-tree-shake-icons: los iconos de categoría se reconstruyen
+      #     desde datos guardados (no son constantes).
+      - name: Compilar AAB
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+        run: flutter build appbundle --release --no-tree-shake-icons --build-number=${{ github.run_number }}
+
+      # 11. Comprueba que NO quedó firmado con la llave de depuración
+      - name: Verificar firma del bundle
+        run: |
+          AAB=build/app/outputs/bundle/release/app-release.aab
+          ls -lh "$AAB"
+          keytool -printcert -jarfile "$AAB" | tee "$RUNNER_TEMP/cert.txt"
+          if grep -qi "Android Debug" "$RUNNER_TEMP/cert.txt"; then
+            echo "::error::El bundle quedó firmado con la llave de depuración. Google Play lo rechazaría."
+            exit 1
+          fi
+
+      # 12. Deja el .aab para descargar desde la ejecución en la pestaña "Actions"
+      - name: Subir AAB como artefacto
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-release-aab
+          path: build/app/outputs/bundle/release/app-release.aab
+          retention-days: 30
