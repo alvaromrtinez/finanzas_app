@@ -42,6 +42,21 @@ String nombreMes(int mes) => _meses[mes - 1];
 
 String formatoFecha(DateTime f) => '${f.day} de ${nombreMes(f.month)}';
 
+/// Etiqueta legible de un mes, por ejemplo "septiembre 2026".
+String etiquetaMes(DateTime f) => '${nombreMes(f.month)} ${f.year}';
+
+/// Clave con la que se guardan los presupuestos de un mes ("2026-09").
+String claveMes(DateTime f) => '${f.year}-${f.month.toString().padLeft(2, '0')}';
+
+/// Primer día del mes siguiente (Dart ajusta solo el cambio de año).
+DateTime mesSiguiente(DateTime f) => DateTime(f.year, f.month + 1);
+
+/// Primer día del mes anterior.
+DateTime mesAnterior(DateTime f) => DateTime(f.year, f.month - 1);
+
+/// Cuántos meses hacia atrás se puede consultar el histórico.
+const int mesesDeHistorico = 12;
+
 /// Paleta de colores para diferenciar categorías en las gráficas.
 const List<Color> _paleta = [
   Color(0xFF2E7D32), Color(0xFF1565C0), Color(0xFFEF6C00),
@@ -59,19 +74,32 @@ Color colorPara(int index) => _paleta[index % _paleta.length];
 class CategoriaConfig {
   String nombre;
   IconData icono;
-  double estimadoMesActual;
-  double estimadoProximoMes;
+
+  /// Presupuesto de cada mes, con clave "AAAA-MM" (ver [claveMes]).
+  /// Cada mes tiene su propio monto, así que cambiar el de un mes
+  /// nunca modifica los demás.
+  Map<String, double> presupuestos;
   List<ArticuloItem> articulos;
   String nota; // anotación libre, útil p. ej. para distinguir a qué crédito se refiere
 
   CategoriaConfig({
     required this.nombre,
     required this.icono,
-    this.estimadoMesActual = 0,
-    this.estimadoProximoMes = 0,
+    Map<String, double>? presupuestos,
     List<ArticuloItem>? articulos,
     this.nota = '',
-  }) : articulos = articulos ?? [];
+  })  : presupuestos = presupuestos ?? {},
+        articulos = articulos ?? [];
+
+  double presupuestoDe(String clave) => presupuestos[clave] ?? 0;
+
+  void setPresupuesto(String clave, double valor) {
+    if (valor > 0) {
+      presupuestos[clave] = valor;
+    } else {
+      presupuestos.remove(clave);
+    }
+  }
 
   /// Suma de (precio x cantidad) de todos los artículos listados en esta
   /// categoría. Sirve para estimar cuánto se gastará en el mes en base a
@@ -82,24 +110,40 @@ class CategoriaConfig {
   Map<String, dynamic> toJson() => {
         'nombre': nombre,
         'icono': icono.codePoint,
-        'estimadoMesActual': estimadoMesActual,
-        'estimadoProximoMes': estimadoProximoMes,
+        'presupuestos': presupuestos,
         'articulos': articulos.map((a) => a.toJson()).toList(),
         'nota': nota,
       };
 
-  factory CategoriaConfig.fromJson(Map<String, dynamic> json) =>
-      CategoriaConfig(
-        nombre: json['nombre'],
-        icono: IconData(json['icono'], fontFamily: 'MaterialIcons'),
-        estimadoMesActual: (json['estimadoMesActual'] as num).toDouble(),
-        estimadoProximoMes: (json['estimadoProximoMes'] as num).toDouble(),
-        articulos: (json['articulos'] as List<dynamic>? ?? [])
-            .map((e) => ArticuloItem.fromJson(e))
-            .toList(),
-        nota: json['nota'] ?? '',
-      );
+  factory CategoriaConfig.fromJson(Map<String, dynamic> json) {
+    final presupuestos = <String, double>{};
+    final guardados = json['presupuestos'];
+    if (guardados is Map) {
+      guardados.forEach((k, v) => presupuestos['$k'] = (v as num).toDouble());
+    } else {
+      // Formato anterior (un solo "mes actual" y un solo "próximo mes"):
+      // se asignan al mes en curso y al siguiente, para no perder nada.
+      final ahora = DateTime.now();
+      final actual = (json['estimadoMesActual'] as num?)?.toDouble() ?? 0;
+      final proximo = (json['estimadoProximoMes'] as num?)?.toDouble() ?? 0;
+      if (actual > 0) presupuestos[claveMes(ahora)] = actual;
+      if (proximo > 0) presupuestos[claveMes(mesSiguiente(ahora))] = proximo;
+    }
+    return CategoriaConfig(
+      nombre: json['nombre'],
+      icono: IconData(json['icono'], fontFamily: 'MaterialIcons'),
+      presupuestos: presupuestos,
+      articulos: (json['articulos'] as List<dynamic>? ?? [])
+          .map((e) => ArticuloItem.fromJson(e))
+          .toList(),
+      nota: json['nota'] ?? '',
+    );
+  }
 }
+
+/// ¿Alguna categoría guardada está todavía en el formato anterior?
+bool hayCategoriasEnFormatoAnterior(List<dynamic> lista) =>
+    lista.any((e) => e is Map && !e.containsKey('presupuestos'));
 
 /// Un producto dentro de la lista de artículos de una categoría
 /// (por ejemplo, "Jabón" a $35 dentro de "Artículos de limpieza").
@@ -305,6 +349,19 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
   bool cargando = true;
   late TabController _tabController;
 
+  /// Mes que se está viendo (siempre día 1). Se puede mover hasta
+  /// [mesesDeHistorico] meses atrás y el mismo tanto hacia adelante.
+  DateTime mesSeleccionado = DateTime(DateTime.now().year, DateTime.now().month);
+
+  DateTime get _mesActual => DateTime(DateTime.now().year, DateTime.now().month);
+  DateTime get _mesMinimo => DateTime(_mesActual.year, _mesActual.month - mesesDeHistorico);
+  DateTime get _mesMaximo => DateTime(_mesActual.year, _mesActual.month + mesesDeHistorico);
+
+  void _irAMes(DateTime m) {
+    if (m.isBefore(_mesMinimo) || m.isAfter(_mesMaximo)) return;
+    setState(() => mesSeleccionado = DateTime(m.year, m.month));
+  }
+
   static const _keyCategorias = 'categorias_finanzas_v2';
   static const _keyGastos = 'gastos_finanzas_v1';
   static const _keyMudanza = 'mudanza_articulos_v1';
@@ -328,7 +385,13 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     final dataCategorias = prefs.getString(_keyCategorias);
     if (dataCategorias != null) {
       final List<dynamic> lista = jsonDecode(dataCategorias);
+      final enFormatoAnterior = hayCategoriasEnFormatoAnterior(lista);
       categorias = lista.map((e) => CategoriaConfig.fromJson(e)).toList();
+      // Guarda ya el formato nuevo para que la migración ocurra una sola vez.
+      if (enFormatoAnterior) {
+        await prefs.setString(
+            _keyCategorias, jsonEncode(categorias.map((c) => c.toJson()).toList()));
+      }
     } else {
       categorias = categoriasPorDefecto();
     }
@@ -366,28 +429,39 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
         _keyMudanza, jsonEncode(mudanza.map((a) => a.toJson()).toList()));
   }
 
-  // --- Cálculos sobre el mes actual -----------------------------------
+  // --- Cálculos sobre el mes seleccionado ------------------------------
+  // (los nombres conservan "MesActual" por compatibilidad, pero ahora se
+  // refieren al mes elegido en el selector)
 
-  List<Gasto> get gastosMesActual {
-    final ahora = DateTime.now();
-    return gastos
-        .where((g) => g.fecha.year == ahora.year && g.fecha.month == ahora.month)
-        .toList()
-      ..sort((a, b) => b.fecha.compareTo(a.fecha));
-  }
+  List<Gasto> _gastosDelMes(DateTime m) => gastos
+      .where((g) => g.fecha.year == m.year && g.fecha.month == m.month)
+      .toList();
+
+  List<Gasto> get gastosMesActual =>
+      _gastosDelMes(mesSeleccionado)..sort((a, b) => b.fecha.compareTo(a.fecha));
 
   double gastadoPorCategoria(String nombre) => gastosMesActual
       .where((g) => g.categoria == nombre)
       .fold(0.0, (sum, g) => sum + g.monto);
 
-  double get totalEstimadoMesActual =>
-      categorias.fold(0, (sum, c) => sum + c.estimadoMesActual);
+  double _presupuestoTotal(DateTime m) =>
+      categorias.fold(0.0, (sum, c) => sum + c.presupuestoDe(claveMes(m)));
+
+  double get totalEstimadoMesActual => _presupuestoTotal(mesSeleccionado);
 
   double get totalGastadoMesActual =>
       gastosMesActual.fold(0, (sum, g) => sum + g.monto);
 
-  double get totalEstimadoProximoMes =>
-      categorias.fold(0, (sum, c) => sum + c.estimadoProximoMes);
+  double get totalEstimadoProximoMes => _presupuestoTotal(mesSiguiente(mesSeleccionado));
+
+  /// Presupuesto y gasto de los 12 meses que terminan en el mes seleccionado.
+  List<ResumenMes> get historial {
+    return List.generate(12, (i) {
+      final m = DateTime(mesSeleccionado.year, mesSeleccionado.month - 11 + i);
+      final gastado = _gastosDelMes(m).fold(0.0, (s, g) => s + g.monto);
+      return ResumenMes(m, gastado, _presupuestoTotal(m));
+    });
+  }
 
   // --- Acciones ----------------------------------------------------------
 
@@ -397,7 +471,15 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     final montoCtrl = TextEditingController(
         text: existente == null ? '' : existente.monto.toStringAsFixed(2));
     final notaCtrl = TextEditingController(text: existente?.nota ?? '');
-    DateTime fecha = existente?.fecha ?? DateTime.now();
+    // Si se está viendo otro mes, el gasto nuevo cae en ese mes (hoy si es el
+    // actual; si no, el mismo día del mes, ajustado a su último día).
+    final hoy = DateTime.now();
+    final diasDelMes = DateTime(mesSeleccionado.year, mesSeleccionado.month + 1, 0).day;
+    DateTime fecha = existente?.fecha ??
+        (mesSeleccionado == _mesActual
+            ? hoy
+            : DateTime(mesSeleccionado.year, mesSeleccionado.month,
+                hoy.day > diasDelMes ? diasDelMes : hoy.day));
     List<ArticuloItem> detalleItems =
         existente == null ? [] : List<ArticuloItem>.from(existente.detalle);
 
@@ -615,12 +697,10 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     await _guardarGastos();
   }
 
-  Future<void> _editarPresupuesto(CategoriaConfig cat, {required bool proximoMes}) async {
+  Future<void> _editarPresupuesto(CategoriaConfig cat, {required DateTime mes}) async {
+    final actual = cat.presupuestoDe(claveMes(mes));
     final ctrl = TextEditingController(
-      text: (proximoMes ? cat.estimadoProximoMes : cat.estimadoMesActual) == 0
-          ? ''
-          : (proximoMes ? cat.estimadoProximoMes : cat.estimadoMesActual)
-              .toStringAsFixed(2),
+      text: actual == 0 ? '' : actual.toStringAsFixed(2),
     );
     final notaCtrl = TextEditingController(text: cat.nota);
 
@@ -654,9 +734,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
               ),
               const SizedBox(height: 4),
               Text(
-                proximoMes
-                    ? 'Presupuesto planeado para ${nombreMes(DateTime.now().month % 12 + 1)}'
-                    : 'Presupuesto de este mes',
+                'Presupuesto de ${etiquetaMes(mes)}',
                 style: const TextStyle(color: Colors.black54),
               ),
               const SizedBox(height: 16),
@@ -683,11 +761,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
               ElevatedButton(
                 onPressed: () {
                   final valor = double.tryParse(ctrl.text) ?? 0;
-                  if (proximoMes) {
-                    cat.estimadoProximoMes = valor;
-                  } else {
-                    cat.estimadoMesActual = valor;
-                  }
+                  cat.setPresupuesto(claveMes(mes), valor);
                   cat.nota = notaCtrl.text.trim();
                   Navigator.pop(context, true);
                 },
@@ -749,15 +823,17 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     await _guardarGastos();
   }
 
-  /// Copia el presupuesto planeado para el próximo mes como el presupuesto
-  /// del mes actual. Útil cuando el mes cambia.
+  /// Copia el presupuesto planeado para el mes siguiente al seleccionado como
+  /// presupuesto del mes seleccionado. Los demás meses no se tocan.
   Future<void> _aplicarPresupuestoProximoMes() async {
+    final destino = mesSeleccionado;
+    final origen = mesSiguiente(mesSeleccionado);
     final confirmar = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Aplicar presupuesto'),
-        content: const Text(
-            'Esto reemplazará el presupuesto del mes actual con lo que planeaste para el próximo mes. ¿Continuar?'),
+        content: Text(
+            'Esto reemplazará el presupuesto de ${etiquetaMes(destino)} con lo que planeaste para ${etiquetaMes(origen)}. ¿Continuar?'),
         actions: [
           TextButton(
               onPressed: () => Navigator.pop(context, false),
@@ -772,7 +848,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     if (confirmar == true) {
       setState(() {
         for (final c in categorias) {
-          c.estimadoMesActual = c.estimadoProximoMes;
+          c.setPresupuesto(claveMes(destino), c.presupuestoDe(claveMes(origen)));
         }
       });
       await _guardarCategorias();
@@ -891,6 +967,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
       MaterialPageRoute(
         builder: (context) => ArticulosScreen(
           categoria: cat,
+          mes: mesSeleccionado,
           onCambio: () async {
             await _guardarCategorias();
             setState(() {});
@@ -1064,30 +1141,120 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
           return const SizedBox.shrink();
         },
       ),
-      body: TabBarView(
+      body: Column(
+        children: [
+          AnimatedBuilder(
+            animation: _tabController,
+            builder: (context, _) => _tabController.index == 3
+                ? const SizedBox.shrink()
+                : _selectorDeMes(),
+          ),
+          Expanded(child: _tabs()),
+        ],
+      ),
+    );
+  }
+
+  /// Flechas para moverse entre meses (hasta 12 atrás y 12 adelante). Tocar el
+  /// nombre del mes abre una lista para saltar directo a cualquiera.
+  Widget _selectorDeMes() {
+    final esActual = mesSeleccionado == _mesActual;
+    return Material(
+      color: Theme.of(context).colorScheme.surfaceContainerHighest.withOpacity(0.5),
+      child: Row(
+        children: [
+          IconButton(
+            tooltip: 'Mes anterior',
+            icon: const Icon(Icons.chevron_left),
+            onPressed: mesSeleccionado.isAfter(_mesMinimo)
+                ? () => _irAMes(mesAnterior(mesSeleccionado))
+                : null,
+          ),
+          Expanded(
+            child: InkWell(
+              onTap: _elegirMes,
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 10),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(etiquetaMes(mesSeleccionado),
+                        style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                    if (!esActual)
+                      const Text('Toca para elegir otro mes',
+                          style: TextStyle(fontSize: 11, color: Colors.black54)),
+                  ],
+                ),
+              ),
+            ),
+          ),
+          if (!esActual)
+            TextButton(onPressed: () => _irAMes(_mesActual), child: const Text('Hoy')),
+          IconButton(
+            tooltip: 'Mes siguiente',
+            icon: const Icon(Icons.chevron_right),
+            onPressed: mesSeleccionado.isBefore(_mesMaximo)
+                ? () => _irAMes(mesSiguiente(mesSeleccionado))
+                : null,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _elegirMes() async {
+    final meses = List.generate(
+      mesesDeHistorico * 2 + 1,
+      (i) => DateTime(_mesActual.year, _mesActual.month - mesesDeHistorico + i),
+    );
+    final elegido = await showModalBottomSheet<DateTime>(
+      context: context,
+      builder: (context) => SafeArea(
+        child: ListView(
+          children: meses.reversed
+              .map((m) => ListTile(
+                    selected: m == mesSeleccionado,
+                    title: Text(etiquetaMes(m)),
+                    trailing: m == _mesActual ? const Text('actual') : null,
+                    onTap: () => Navigator.pop(context, m),
+                  ))
+              .toList(),
+        ),
+      ),
+    );
+    if (elegido != null) _irAMes(elegido);
+  }
+
+  Widget _tabs() {
+    return TabBarView(
         controller: _tabController,
         children: [
           _EsteMesTab(
+            mes: mesSeleccionado,
             categorias: categorias,
             gastosMesActual: gastosMesActual,
             totalEstimado: totalEstimadoMesActual,
             totalGastado: totalGastadoMesActual,
             gastadoPorCategoria: gastadoPorCategoria,
-            onEditarPresupuesto: (c) => _editarPresupuesto(c, proximoMes: false),
+            onEditarPresupuesto: (c) => _editarPresupuesto(c, mes: mesSeleccionado),
             onEliminarCategoria: _eliminarCategoria,
             onEliminarGasto: _eliminarGasto,
             onEditarGasto: (g) => _registrarOEditarGasto(existente: g),
             onVerArticulos: _abrirListaArticulos,
           ),
           _GraficasTab(
+            mes: mesSeleccionado,
             categorias: categorias,
             gastadoPorCategoria: gastadoPorCategoria,
             totalGastado: totalGastadoMesActual,
+            historial: historial,
           ),
           _ProximoMesTab(
+            mes: mesSiguiente(mesSeleccionado),
             categorias: categorias,
             totalEstimadoProximoMes: totalEstimadoProximoMes,
-            onEditarPresupuesto: (c) => _editarPresupuesto(c, proximoMes: true),
+            onEditarPresupuesto: (c) =>
+                _editarPresupuesto(c, mes: mesSiguiente(mesSeleccionado)),
             onAplicar: _aplicarPresupuestoProximoMes,
             onVerArticulos: _abrirListaArticulos,
           ),
@@ -1098,7 +1265,6 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
             onToggle: _toggleCompradoMudanza,
           ),
         ],
-      ),
     );
   }
 }
@@ -1108,6 +1274,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
 // ---------------------------------------------------------------------------
 
 class _EsteMesTab extends StatelessWidget {
+  final DateTime mes;
   final List<CategoriaConfig> categorias;
   final List<Gasto> gastosMesActual;
   final double totalEstimado;
@@ -1120,6 +1287,7 @@ class _EsteMesTab extends StatelessWidget {
   final void Function(CategoriaConfig) onVerArticulos;
 
   const _EsteMesTab({
+    required this.mes,
     required this.categorias,
     required this.gastosMesActual,
     required this.totalEstimado,
@@ -1155,6 +1323,7 @@ class _EsteMesTab extends StatelessWidget {
           return _CategoriaTile(
             categoria: cat,
             gastado: gastado,
+            presupuesto: cat.presupuestoDe(claveMes(mes)),
             onTap: () => onEditarPresupuesto(cat),
             onDelete: () => onEliminarCategoria(cat),
             onVerArticulos: () => onVerArticulos(cat),
@@ -1166,7 +1335,7 @@ class _EsteMesTab extends StatelessWidget {
         if (gastosMesActual.isEmpty)
           const Padding(
             padding: EdgeInsets.symmetric(vertical: 12),
-            child: Text('Todavía no registras gastos este mes.',
+            child: Text('No hay gastos registrados en ${etiquetaMes(mes)}.',
                 style: TextStyle(color: Colors.black54)),
           )
         else
@@ -1218,15 +1387,27 @@ class _EsteMesTab extends StatelessWidget {
 // PESTAÑA: GRÁFICAS
 // ---------------------------------------------------------------------------
 
+/// Totales de un mes, para la gráfica del último año.
+class ResumenMes {
+  final DateTime mes;
+  final double gastado;
+  final double presupuesto;
+  const ResumenMes(this.mes, this.gastado, this.presupuesto);
+}
+
 class _GraficasTab extends StatelessWidget {
+  final DateTime mes;
   final List<CategoriaConfig> categorias;
   final double Function(String nombre) gastadoPorCategoria;
   final double totalGastado;
+  final List<ResumenMes> historial; // 12 meses terminando en el mes visto
 
   const _GraficasTab({
+    required this.mes,
     required this.categorias,
     required this.gastadoPorCategoria,
     required this.totalGastado,
+    required this.historial,
   });
 
   @override
@@ -1236,24 +1417,31 @@ class _GraficasTab extends StatelessWidget {
         .where((e) => e.value > 0)
         .toList();
 
+    final historialWidget = _historialAnual(context);
+
     if (conGasto.isEmpty) {
-      return const Center(
-        child: Padding(
-          padding: EdgeInsets.all(24),
-          child: Text(
-            'Registra algunos gastos este mes para ver tus gráficas aquí.',
-            textAlign: TextAlign.center,
-            style: TextStyle(color: Colors.black54, fontSize: 16),
+      return ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 24),
+            child: Text(
+              'No hay gastos en ${etiquetaMes(mes)} para graficar.',
+              textAlign: TextAlign.center,
+              style: const TextStyle(color: Colors.black54, fontSize: 16),
+            ),
           ),
-        ),
+          ...historialWidget,
+          const SizedBox(height: 40),
+        ],
       );
     }
 
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        const Text('Gasto por categoría (mes actual)',
-            style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+        Text('Gasto por categoría (${etiquetaMes(mes)})',
+            style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
         const SizedBox(height: 16),
         SizedBox(
           height: 220,
@@ -1307,10 +1495,12 @@ class _GraficasTab extends StatelessWidget {
                 final cat = categorias[i];
                 final gastado = gastadoPorCategoria(cat.nombre);
                 return BarChartGroupData(x: i, barRods: [
-                  BarChartRodData(toY: cat.estimadoMesActual, color: Colors.grey.shade400, width: 8),
+                  BarChartRodData(
+                      toY: cat.presupuestoDe(claveMes(mes)), color: Colors.grey.shade400, width: 8),
                   BarChartRodData(
                       toY: gastado,
-                      color: gastado > cat.estimadoMesActual && cat.estimadoMesActual > 0
+                      color: gastado > cat.presupuestoDe(claveMes(mes)) &&
+                              cat.presupuestoDe(claveMes(mes)) > 0
                           ? Colors.red
                           : Theme.of(context).colorScheme.primary,
                       width: 8),
@@ -1349,15 +1539,84 @@ class _GraficasTab extends StatelessWidget {
             _leyendaBarra(Theme.of(context).colorScheme.primary, 'Gastado'),
           ],
         ),
+        const SizedBox(height: 28),
+        ...historialWidget,
         const SizedBox(height: 40),
       ],
     );
   }
 
+  /// Gráfica de los últimos 12 meses: presupuesto vs. gastado de cada uno.
+  List<Widget> _historialAnual(BuildContext context) {
+    double maxV = 0;
+    for (final r in historial) {
+      if (r.gastado > maxV) maxV = r.gastado;
+      if (r.presupuesto > maxV) maxV = r.presupuesto;
+    }
+    final primario = Theme.of(context).colorScheme.primary;
+    return [
+      const Text('Últimos 12 meses',
+          style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+      const SizedBox(height: 4),
+      Text('Termina en ${etiquetaMes(mes)}',
+          style: const TextStyle(color: Colors.black54, fontSize: 12)),
+      const SizedBox(height: 16),
+      SizedBox(
+        height: 240,
+        child: BarChart(
+          BarChartData(
+            alignment: BarChartAlignment.spaceAround,
+            maxY: maxV == 0 ? 100 : maxV * 1.2,
+            barGroups: List.generate(historial.length, (i) {
+              final r = historial[i];
+              return BarChartGroupData(x: i, barRods: [
+                BarChartRodData(toY: r.presupuesto, color: Colors.grey.shade400, width: 5),
+                BarChartRodData(
+                    toY: r.gastado,
+                    color: r.presupuesto > 0 && r.gastado > r.presupuesto ? Colors.red : primario,
+                    width: 5),
+              ]);
+            }),
+            titlesData: FlTitlesData(
+              leftTitles: const AxisTitles(sideTitles: SideTitles(showTitles: true, reservedSize: 40)),
+              topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+              rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+              bottomTitles: AxisTitles(
+                sideTitles: SideTitles(
+                  showTitles: true,
+                  getTitlesWidget: (value, meta) {
+                    final i = value.toInt();
+                    if (i < 0 || i >= historial.length) return const SizedBox.shrink();
+                    final nombre = nombreMes(historial[i].mes.month);
+                    return Padding(
+                      padding: const EdgeInsets.only(top: 6),
+                      child: Text(nombre.substring(0, 3), style: const TextStyle(fontSize: 9)),
+                    );
+                  },
+                ),
+              ),
+            ),
+            borderData: FlBorderData(show: false),
+            gridData: const FlGridData(show: false),
+          ),
+        ),
+      ),
+      Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          _leyendaBarra(Colors.grey.shade400, 'Presupuesto'),
+          const SizedBox(width: 16),
+          _leyendaBarra(primario, 'Gastado'),
+        ],
+      ),
+    ];
+  }
+
   double _maxYEstimadoGastado() {
     double maxV = 0;
     for (final c in categorias) {
-      maxV = [maxV, c.estimadoMesActual, gastadoPorCategoria(c.nombre)].reduce((a, b) => a > b ? a : b);
+      maxV = [maxV, c.presupuestoDe(claveMes(mes)), gastadoPorCategoria(c.nombre)]
+          .reduce((a, b) => a > b ? a : b);
     }
     return maxV == 0 ? 100 : maxV * 1.2;
   }
@@ -1379,6 +1638,8 @@ class _GraficasTab extends StatelessWidget {
 // ---------------------------------------------------------------------------
 
 class _ProximoMesTab extends StatelessWidget {
+  /// Mes que se está planeando (el siguiente al que se ve en "Este mes").
+  final DateTime mes;
   final List<CategoriaConfig> categorias;
   final double totalEstimadoProximoMes;
   final void Function(CategoriaConfig) onEditarPresupuesto;
@@ -1386,6 +1647,7 @@ class _ProximoMesTab extends StatelessWidget {
   final void Function(CategoriaConfig) onVerArticulos;
 
   const _ProximoMesTab({
+    required this.mes,
     required this.categorias,
     required this.totalEstimadoProximoMes,
     required this.onEditarPresupuesto,
@@ -1395,7 +1657,7 @@ class _ProximoMesTab extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final proximoMesNombre = nombreMes(DateTime.now().month % 12 + 1);
+    final proximoMesNombre = etiquetaMes(mes);
 
     return ListView(
       padding: const EdgeInsets.all(16),
@@ -1422,7 +1684,7 @@ class _ProximoMesTab extends StatelessWidget {
                 OutlinedButton.icon(
                   onPressed: onAplicar,
                   icon: const Icon(Icons.sync_alt),
-                  label: const Text('Usar esto como presupuesto del mes actual'),
+                  label: Text('Usar esto como presupuesto de ${etiquetaMes(mesAnterior(mes))}'),
                 ),
               ],
             ),
@@ -1448,9 +1710,9 @@ class _ProximoMesTab extends StatelessWidget {
                       Text(cat.nota,
                           style: const TextStyle(
                               fontSize: 12, fontStyle: FontStyle.italic, color: Colors.black54)),
-                    Text(cat.estimadoProximoMes == 0
+                    Text(cat.presupuestoDe(claveMes(mes)) == 0
                         ? 'Sin planear todavía'
-                        : 'Planeado: \$${cat.estimadoProximoMes.toStringAsFixed(2)}'),
+                        : 'Planeado: \$${cat.presupuestoDe(claveMes(mes)).toStringAsFixed(2)}'),
                   ],
                 ),
                 trailing: Row(
@@ -1675,6 +1937,7 @@ class _ResumenCard extends StatelessWidget {
 class _CategoriaTile extends StatelessWidget {
   final CategoriaConfig categoria;
   final double gastado;
+  final double presupuesto; // presupuesto del mes que se está viendo
   final VoidCallback onTap;
   final VoidCallback onDelete;
   final VoidCallback onVerArticulos;
@@ -1682,6 +1945,7 @@ class _CategoriaTile extends StatelessWidget {
   const _CategoriaTile({
     required this.categoria,
     required this.gastado,
+    required this.presupuesto,
     required this.onTap,
     required this.onDelete,
     required this.onVerArticulos,
@@ -1689,9 +1953,7 @@ class _CategoriaTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final progreso = categoria.estimadoMesActual == 0
-        ? 0.0
-        : (gastado / categoria.estimadoMesActual).clamp(0.0, 1.5);
+    final progreso = presupuesto == 0 ? 0.0 : (gastado / presupuesto).clamp(0.0, 1.5);
     final color = progreso > 1
         ? Colors.red
         : progreso > 0.85
@@ -1742,7 +2004,7 @@ class _CategoriaTile extends StatelessWidget {
                   ),
                 ),
                 const SizedBox(height: 6),
-                Text('\$${gastado.toStringAsFixed(2)} / \$${categoria.estimadoMesActual.toStringAsFixed(2)}',
+                Text('\$${gastado.toStringAsFixed(2)} / \$${presupuesto.toStringAsFixed(2)}',
                     style: const TextStyle(fontSize: 12, color: Colors.black54)),
                 if (categoria.articulos.isNotEmpty) ...[
                   const SizedBox(height: 2),
@@ -1780,11 +2042,16 @@ class _CategoriaTile extends StatelessWidget {
 /// o de cuidado personal), para calcular cuánto sumaría gastar en ellos.
 class ArticulosScreen extends StatefulWidget {
   final CategoriaConfig categoria;
+
+  /// Mes que se está viendo en la app; los botones de "usar como presupuesto"
+  /// aplican a este mes y al siguiente.
+  final DateTime mes;
   final VoidCallback onCambio;
 
   const ArticulosScreen({
     super.key,
     required this.categoria,
+    required this.mes,
     required this.onCambio,
   });
 
@@ -1902,16 +2169,14 @@ class _ArticulosScreenState extends State<ArticulosScreen> {
     widget.onCambio();
   }
 
-  Future<void> _usarComoPresupuesto({required bool proximoMes}) async {
+  Future<void> _usarComoPresupuesto({required DateTime mes}) async {
     final total = widget.categoria.totalArticulos;
     final confirmar = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Usar como presupuesto'),
         content: Text(
-          proximoMes
-              ? 'Se usará \$${total.toStringAsFixed(2)} como presupuesto planeado del próximo mes para "${widget.categoria.nombre}".'
-              : 'Se usará \$${total.toStringAsFixed(2)} como presupuesto del mes actual para "${widget.categoria.nombre}".',
+          'Se usará \$${total.toStringAsFixed(2)} como presupuesto de ${etiquetaMes(mes)} para "${widget.categoria.nombre}". Los demás meses no cambian.',
         ),
         actions: [
           TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancelar')),
@@ -1922,11 +2187,7 @@ class _ArticulosScreenState extends State<ArticulosScreen> {
 
     if (confirmar == true) {
       setState(() {
-        if (proximoMes) {
-          widget.categoria.estimadoProximoMes = total;
-        } else {
-          widget.categoria.estimadoMesActual = total;
-        }
+        widget.categoria.setPresupuesto(claveMes(mes), total);
       });
       widget.onCambio();
       if (mounted) {
@@ -1974,14 +2235,16 @@ class _ArticulosScreenState extends State<ArticulosScreen> {
                     runSpacing: 8,
                     children: [
                       OutlinedButton.icon(
-                        onPressed: articulos.isEmpty ? null : () => _usarComoPresupuesto(proximoMes: false),
+                        onPressed: articulos.isEmpty ? null : () => _usarComoPresupuesto(mes: widget.mes),
                         icon: const Icon(Icons.calendar_today, size: 16),
-                        label: const Text('Usar en mes actual'),
+                        label: Text('Usar en ${nombreMes(widget.mes.month)}'),
                       ),
                       OutlinedButton.icon(
-                        onPressed: articulos.isEmpty ? null : () => _usarComoPresupuesto(proximoMes: true),
+                        onPressed: articulos.isEmpty
+                            ? null
+                            : () => _usarComoPresupuesto(mes: mesSiguiente(widget.mes)),
                         icon: const Icon(Icons.calendar_month, size: 16),
-                        label: const Text('Usar en próximo mes'),
+                        label: Text('Usar en ${nombreMes(mesSiguiente(widget.mes).month)}'),
                       ),
                     ],
                   ),
