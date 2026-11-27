@@ -1333,10 +1333,10 @@ class _EsteMesTab extends StatelessWidget {
         const Text('Gastos recientes', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
         const SizedBox(height: 8),
         if (gastosMesActual.isEmpty)
-          const Padding(
-            padding: EdgeInsets.symmetric(vertical: 12),
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 12),
             child: Text('No hay gastos registrados en ${etiquetaMes(mes)}.',
-                style: TextStyle(color: Colors.black54)),
+                style: const TextStyle(color: Colors.black54)),
           )
         else
           ...gastosMesActual.map((g) {
